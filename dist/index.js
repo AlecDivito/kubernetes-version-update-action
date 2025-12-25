@@ -39422,19 +39422,19 @@ OpenAI.Videos = Videos;
 
 function normalizeVersion(v) {
     if (!v)
-        return "";
+        return '';
     const match = v.match(/(\d+\.\d+.*)$/);
-    return match ? match[1] : v.replace(/^v/, "");
+    return match ? match[1] : v.replace(/^v/, '');
 }
 let globalDryRun = false;
 function setGlobalDryRun(dryRun) {
     globalDryRun = dryRun;
 }
 function log(message, dryRun = globalDryRun) {
-    const prefix = dryRun ? "[DRY RUN] " : "";
-    if (message.includes("\n")) {
+    const prefix = dryRun ? '[DRY RUN] ' : '';
+    if (message.includes('\n')) {
         // For multiline messages, prefix each line
-        const lines = message.split("\n");
+        const lines = message.split('\n');
         for (const line of lines) {
             coreExports.info(`${prefix}${line}`);
         }
@@ -39445,11 +39445,16 @@ function log(message, dryRun = globalDryRun) {
 }
 function formatRisk(risk) {
     switch (risk) {
-        case "None": return "None ✅";
-        case "Low": return "Low 🟢";
-        case "Medium": return "Medium 🟡";
-        case "High": return "High 🔴";
-        default: return risk;
+        case 'None':
+            return 'None ✅';
+        case 'Low':
+            return 'Low 🟢';
+        case 'Medium':
+            return 'Medium 🟡';
+        case 'High':
+            return 'High 🔴';
+        default:
+            return risk;
     }
 }
 
@@ -39463,30 +39468,30 @@ class GitHubService {
         // If maxReleases is Infinity, we'll fetch up to 20 pages (600 releases) as a safety limit.
         // Otherwise, fetch enough pages to cover maxReleases + a buffer to find 'cur'.
         const MAX_PAGES = maxReleases === Infinity ? 20 : Math.ceil(maxReleases / 30) + 2;
-        const maxLog = maxReleases === Infinity ? "No Limit" : maxReleases;
+        const maxLog = maxReleases === Infinity ? 'No Limit' : maxReleases;
         let allReleases = [];
-        log(`☎️  Fetching releases for ${owner}/${repo} until ${currentVersion || "latest"} (Max: ${maxLog})...`);
+        log(`☎️  Fetching releases for ${owner}/${repo} until ${currentVersion || 'latest'} (Max: ${maxLog})...`);
         for (let page = 1; page <= MAX_PAGES; page++) {
             log(`☎️  Calling github GET https://api.github.com/repos/${owner}/${repo}/releases?page=${page}&per_page=30`);
             const { data: releases } = await this.octokit.rest.repos.listReleases({
                 owner,
                 repo,
                 page,
-                per_page: 30,
+                per_page: 30
             });
             if (!releases || releases.length === 0)
                 break;
-            const formattedReleases = releases.map(r => ({
+            const formattedReleases = releases.map((r) => ({
                 tag_name: r.tag_name,
                 name: r.name || undefined,
                 body: r.body || undefined,
                 html_url: r.html_url,
-                published_at: r.published_at || r.created_at,
+                published_at: r.published_at || r.created_at
             }));
             allReleases = allReleases.concat(formattedReleases);
             if (!cur)
                 break;
-            const found = releases.find(r => normalizeVersion(r.tag_name) === cur);
+            const found = releases.find((r) => normalizeVersion(r.tag_name) === cur);
             if (found) {
                 log(`✅ Found current version ${currentVersion} at page ${page}`);
                 break;
@@ -39502,38 +39507,42 @@ class GitHubService {
             title,
             head,
             base,
-            body,
+            body
         });
     }
 }
 class DockerHubService {
     async fetchLatestTag(repo) {
         return new Promise((resolve, reject) => {
-            const isOfficial = !repo.includes("/");
+            const isOfficial = !repo.includes('/');
             const fullRepo = isOfficial ? `library/${repo}` : repo;
             const url = `https://hub.docker.com/v2/repositories/${fullRepo}/tags?page_size=20&ordering=last_updated`;
             log(`☎️  Calling Docker Hub GET ${url}`);
-            require$$1.get(url, { headers: { "User-Agent": "version-bumper" } }, (res) => {
-                let data = "";
-                res.on("data", (c) => (data += c));
-                res.on("end", () => {
+            require$$1
+                .get(url, { headers: { 'User-Agent': 'version-bumper' } }, (res) => {
+                let data = '';
+                res.on('data', (c) => (data += c));
+                res.on('end', () => {
                     if (res.statusCode >= 400)
                         return reject(new Error(data));
                     const json = JSON.parse(data);
                     const versionTags = json.results.filter((t) => /^\d+\.\d+(\.\d+)?$/.test(t.name));
-                    const latestTag = versionTags[0] || json.results.find((t) => t.name !== "latest") || json.results[0];
+                    const latestTag = versionTags[0] ||
+                        json.results.find((t) => t.name !== 'latest') ||
+                        json.results[0];
                     if (latestTag) {
                         resolve({
                             tag_name: latestTag.name,
                             published_at: latestTag.last_updated,
-                            html_url: `https://hub.docker.com/_/${isOfficial ? repo : repo}`,
+                            html_url: `https://hub.docker.com/_/${isOfficial ? repo : repo}`
                         });
                     }
                     else {
                         reject(new Error(`No tags found for ${repo}`));
                     }
                 });
-            }).on("error", reject);
+            })
+                .on('error', reject);
         });
     }
 }
@@ -39543,7 +39552,7 @@ class OpenAIService {
         if (config?.apiKey && config?.baseURL && config?.model) {
             this.openai = new OpenAI({
                 baseURL: config.baseURL,
-                apiKey: config.apiKey,
+                apiKey: config.apiKey
             });
         }
     }
@@ -39553,15 +39562,15 @@ class OpenAIService {
                 tag_name: release.tag_name,
                 html_url: release.html_url,
                 published_at: release.published_at,
-                summary: "AI analysis skipped (not configured).",
+                summary: 'AI analysis skipped (not configured).',
                 worryFree: false,
-                risk: "High",
+                risk: 'High'
             };
         }
         const prompt = `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".
 Release Name/Tag: ${release.name || release.tag_name}
 Release Notes:
-${release.body || "No release notes provided."}
+${release.body || 'No release notes provided.'}
 
 Task:
 1. Provide a very short summary of the most important changes in this specific release.
@@ -39580,10 +39589,10 @@ Respond ONLY in JSON format:
             log(`🤖 Analyzing release ${release.tag_name} for ${appName}...`);
             const response = await this.openai.chat.completions.create({
                 model: model,
-                messages: [{ role: "user", content: prompt }],
-                response_format: { type: "json_object" },
+                messages: [{ role: 'user', content: prompt }],
+                response_format: { type: 'json_object' }
             });
-            const assessment = JSON.parse(response.choices[0].message.content || "{}");
+            const assessment = JSON.parse(response.choices[0].message.content || '{}');
             return {
                 tag_name: release.tag_name,
                 html_url: release.html_url,
@@ -39592,14 +39601,14 @@ Respond ONLY in JSON format:
             };
         }
         catch (e) {
-            log(`⚠️ AI analysis failed for ${release.tag_name}: ${e.message}`);
+            log(`⚠️ AI analysis failed for ${release.tag_name}: ${e instanceof Error ? e.message : 'Unknown error'}`);
             return {
                 tag_name: release.tag_name,
                 html_url: release.html_url,
                 published_at: release.published_at,
-                summary: "Failed to analyze release.",
+                summary: 'Failed to analyze release.',
                 worryFree: false,
-                risk: "High"
+                risk: 'High'
             };
         }
     }
@@ -39619,8 +39628,13 @@ Respond ONLY in JSON format:
         if (relevantReleases.length === 0)
             return null;
         log(`🤖 Starting individual analysis for ${relevantReleases.length} releases...`);
-        const assessments = await Promise.all(relevantReleases.map(r => this.analyzeRelease(appName, r, model)));
-        const riskLevels = ["None", "Low", "Medium", "High"];
+        const assessments = await Promise.all(relevantReleases.map((r) => this.analyzeRelease(appName, r, model)));
+        const riskLevels = [
+            'None',
+            'Low',
+            'Medium',
+            'High'
+        ];
         const maxRiskIndex = assessments.reduce((max, a) => {
             const idx = riskLevels.indexOf(a.risk);
             return idx > max ? idx : max;
@@ -39628,7 +39642,7 @@ Respond ONLY in JSON format:
         return {
             releases: assessments,
             overallRisk: riskLevels[maxRiskIndex],
-            overallWorryFree: assessments.every(a => a.worryFree)
+            overallWorryFree: assessments.every((a) => a.worryFree)
         };
     }
 }
@@ -43491,11 +43505,11 @@ function getYamlValue(file, path) {
     if (!fs.existsSync(file)) {
         throw new Error(`File not found: ${file}`);
     }
-    const content = fs.readFileSync(file, "utf8");
+    const content = fs.readFileSync(file, 'utf8');
     try {
         const data = jsYaml.load(content);
-        const value = path.split(".").reduce((o, k) => {
-            if (o && k in o)
+        const value = path.split('.').reduce((o, k) => {
+            if (o && typeof o === 'object' && k in o)
                 return o[k];
             if (Array.isArray(o) && /^\d+$/.test(k))
                 return o[parseInt(k)];
@@ -43503,31 +43517,31 @@ function getYamlValue(file, path) {
         }, data);
         return value !== undefined ? String(value) : null;
     }
-    catch (e) {
-        const targetKey = path.split(".").pop();
-        const match = content.match(new RegExp(`^\\s*${targetKey}:\\s*["']?([^#\\n"']+)`, "m"));
+    catch {
+        const targetKey = path.split('.').pop();
+        const match = content.match(new RegExp(`^\\s*${targetKey}:\\s*["']?([^#\\n"']+)`, 'm'));
         return match ? match[1].trim() : null;
     }
 }
 function setYamlValue(file, path, newValue, type, dryRun) {
-    const content = fs.readFileSync(file, "utf8");
+    const content = fs.readFileSync(file, 'utf8');
     const oldValue = getYamlValue(file, path);
     log(`✍️  Update ${file} -> ${path}: ${oldValue} -> ${newValue}`, dryRun);
     if (dryRun) {
         return;
     }
-    const targetKey = path.split(".").pop();
-    let searchVal = oldValue || "";
+    const targetKey = path.split('.').pop();
+    const searchVal = oldValue || '';
     let replaceVal = newValue;
-    if (type === "kubernetes" && oldValue && oldValue.includes(":")) {
-        const [repo] = oldValue.split(":");
+    if (type === 'kubernetes' && oldValue && oldValue.includes(':')) {
+        const [repo] = oldValue.split(':');
         replaceVal = `${repo}:${newValue}`;
     }
-    const escapedOldValue = searchVal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`^(\\s*(?:-\\s*)?${targetKey}:\\s*)${escapedOldValue}(.*)$`, "m");
+    const escapedOldValue = searchVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`^(\\s*(?:-\\s*)?${targetKey}:\\s*)${escapedOldValue}(.*)$`, 'm');
     let newContent;
     if (!regex.test(content)) {
-        const fallbackRegex = new RegExp(`^(\\s*(?:-\\s*)?${targetKey}:\\s*)([^#\\n]+)(.*)$`, "m");
+        const fallbackRegex = new RegExp(`^(\\s*(?:-\\s*)?${targetKey}:\\s*)([^#\\n]+)(.*)$`, 'm');
         if (!fallbackRegex.test(content)) {
             throw new Error(`Could not find key "${targetKey}" in ${file}`);
         }
@@ -43542,25 +43556,26 @@ function setYamlValue(file, path, newValue, type, dryRun) {
 async function run() {
     try {
         const config = {
-            repo: coreExports.getInput("repo", { required: true }),
-            type: coreExports.getInput("type"),
-            source: coreExports.getInput("source"),
-            targets: JSON.parse(coreExports.getInput("targets", { required: true })),
-            releaseFilter: coreExports.getInput("release_filter"),
+            repo: coreExports.getInput('repo', { required: true }),
+            type: coreExports.getInput('type'),
+            source: coreExports.getInput('source'),
+            targets: JSON.parse(coreExports.getInput('targets', { required: true })),
+            releaseFilter: coreExports.getInput('release_filter'),
             openaiConfig: {
-                baseURL: coreExports.getInput("openai_base_url"),
-                model: coreExports.getInput("openai_model"),
-                apiKey: coreExports.getInput("openai_api_key"),
+                baseURL: coreExports.getInput('openai_base_url'),
+                model: coreExports.getInput('openai_model'),
+                apiKey: coreExports.getInput('openai_api_key')
             },
-            maxReleases: coreExports.getInput("max_releases") === "Infinity" || !coreExports.getInput("max_releases")
+            maxReleases: coreExports.getInput('max_releases') === 'Infinity' ||
+                !coreExports.getInput('max_releases')
                 ? Infinity
-                : parseInt(coreExports.getInput("max_releases")),
-            dryRun: coreExports.getInput("dry_run") === "true",
-            githubToken: coreExports.getInput("github_token", { required: true }),
+                : parseInt(coreExports.getInput('max_releases')),
+            dryRun: coreExports.getInput('dry_run') === 'true',
+            githubToken: coreExports.getInput('github_token', { required: true })
         };
         setGlobalDryRun(config.dryRun);
-        const [owner, repoName] = config.repo.includes("/")
-            ? config.repo.split("/")
+        const [owner, repoName] = config.repo.includes('/')
+            ? config.repo.split('/')
             : [null, config.repo];
         const displayName = repoName;
         const ghService = new GitHubService(config.githubToken);
@@ -43569,20 +43584,21 @@ async function run() {
         log(`🪄 Processing application "${displayName}"`);
         let latestRelease;
         let releases = [];
-        if (config.source === "dockerhub") {
+        if (config.source === 'dockerhub') {
             latestRelease = await dhService.fetchLatestTag(config.repo);
         }
         else {
             if (!owner)
                 throw new Error(`Invalid repo format for GitHub source: ${config.repo}`);
             const firstTarget = config.targets[0];
-            let currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || "";
-            if (config.type === "kubernetes" && currentVerRaw.includes(":")) {
-                currentVerRaw = currentVerRaw.split(":")[1];
+            let currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || '';
+            if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
+                currentVerRaw = currentVerRaw.split(':')[1];
             }
             releases = await ghService.fetchAllReleases(owner, repoName, currentVerRaw, config.maxReleases);
             if (config.releaseFilter) {
-                const filtered = releases.find(r => r.tag_name.includes(config.releaseFilter) || (r.name && r.name.includes(config.releaseFilter)));
+                const filtered = releases.find((r) => r.tag_name.includes(config.releaseFilter) ||
+                    (r.name && r.name.includes(config.releaseFilter)));
                 if (!filtered)
                     throw new Error(`No release found matching filter: ${config.releaseFilter}`);
                 latestRelease = filtered;
@@ -43598,13 +43614,15 @@ async function run() {
         const latestVerNormalized = normalizeVersion(latestRelease.tag_name);
         const updatesNeeded = [];
         for (const target of config.targets) {
-            let currentVerRaw = getYamlValue(target.file, target.path) || "";
-            if (config.type === "kubernetes" && currentVerRaw.includes(":")) {
-                currentVerRaw = currentVerRaw.split(":")[1];
+            let currentVerRaw = getYamlValue(target.file, target.path) || '';
+            if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
+                currentVerRaw = currentVerRaw.split(':')[1];
             }
             const currentVerNormalized = normalizeVersion(currentVerRaw);
-            if (latestVerNormalized && currentVerNormalized && latestVerNormalized !== currentVerNormalized) {
-                const targetVersion = currentVerRaw.startsWith("v") && !latestVerNormalized.startsWith("v")
+            if (latestVerNormalized &&
+                currentVerNormalized &&
+                latestVerNormalized !== currentVerNormalized) {
+                const targetVersion = currentVerRaw.startsWith('v') && !latestVerNormalized.startsWith('v')
                     ? `v${latestVerNormalized}`
                     : latestVerNormalized;
                 updatesNeeded.push({ target, currentVerRaw, targetVersion });
@@ -43618,20 +43636,22 @@ async function run() {
         let aiAssessment = null;
         if (config.openaiConfig?.apiKey) {
             const currentVer = updatesNeeded[0].currentVerRaw;
-            aiAssessment = await aiService.analyzeRisks(displayName, currentVer, config.source === "dockerhub" ? [latestRelease] : releases, config.openaiConfig.model, config.maxReleases);
+            aiAssessment = await aiService.analyzeRisks(displayName, currentVer, config.source === 'dockerhub' ? [latestRelease] : releases, config.openaiConfig.model, config.maxReleases);
         }
         log(`🚀 Updating ${displayName} (${config.repo}): ${updatesNeeded.length} target(s) need updates`);
         if (aiAssessment) {
-            log(`📊 AI Overall Risk: [${formatRisk(aiAssessment.overallRisk)}] ${aiAssessment.overallWorryFree ? "✅ Worry-free" : "⚠️ Proceed with caution"}`);
+            log(`📊 AI Overall Risk: [${formatRisk(aiAssessment.overallRisk)}] ${aiAssessment.overallWorryFree ? '✅ Worry-free' : '⚠️ Proceed with caution'}`);
             for (const rel of aiAssessment.releases) {
-                const dateStr = rel.published_at ? new Date(rel.published_at).toLocaleDateString() : "unknown date";
+                const dateStr = rel.published_at
+                    ? new Date(rel.published_at).toLocaleDateString()
+                    : 'unknown date';
                 log(`   - ${rel.tag_name} (${dateStr}): [${formatRisk(rel.risk)}] ${rel.summary}`);
-                if (rel.risk !== "None" && rel.recommendations) {
+                if (rel.risk !== 'None' && rel.recommendations) {
                     log(`     💡 Recommendation: ${rel.recommendations}`);
                 }
             }
         }
-        const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(/\//g, "-");
+        const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(/\//g, '-');
         if (config.dryRun) {
             log(`💻 git checkout -b ${branchName}`);
             for (const update of updatesNeeded) {
@@ -43646,32 +43666,38 @@ async function run() {
             return;
         }
         // Git Operations
-        await execExports.exec("git", ["checkout", "-b", branchName]);
+        await execExports.exec('git', ['checkout', '-b', branchName]);
         for (const update of updatesNeeded) {
             log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
             setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, false);
-            await execExports.exec("git", ["add", update.target.file]);
+            await execExports.exec('git', ['add', update.target.file]);
         }
-        await execExports.exec("git", ["commit", "-m", `chore: bump ${displayName} to ${latestVerNormalized}`]);
-        await execExports.exec("git", ["push", "origin", branchName]);
+        await execExports.exec('git', [
+            'commit',
+            '-m',
+            `chore: bump ${displayName} to ${latestVerNormalized}`
+        ]);
+        await execExports.exec('git', ['push', 'origin', branchName]);
         // PR Creation
         let body = `Automated version update for ${displayName}.\n\n[Latest Release Notes](${latestRelease.html_url})`;
         if (aiAssessment) {
-            body += `\n\n### 🤖 AI Risk Assessment\n- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? "Yes" : "No"}\n\n#### Detailed Release Summaries\n`;
+            body += `\n\n### 🤖 AI Risk Assessment\n- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes' : 'No'}\n\n#### Detailed Release Summaries\n`;
             for (const rel of aiAssessment.releases) {
-                const dateStr = rel.published_at ? new Date(rel.published_at).toLocaleDateString() : "unknown date";
-                body += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? "Yes" : "No"})\n  ${rel.summary}\n`;
-                if (rel.risk !== "None" && rel.recommendations) {
+                const dateStr = rel.published_at
+                    ? new Date(rel.published_at).toLocaleDateString()
+                    : 'unknown date';
+                body += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n  ${rel.summary}\n`;
+                if (rel.risk !== 'None' && rel.recommendations) {
                     body += `  > **💡 Recommendation:** ${rel.recommendations}\n`;
                 }
             }
         }
-        const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split("/");
-        await ghService.createPullRequest(contextOwner, contextRepo, `chore: update ${displayName} to ${latestVerNormalized}`, branchName, "main", body);
-        await execExports.exec("git", ["checkout", "main"]);
+        const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
+        await ghService.createPullRequest(contextOwner, contextRepo, `chore: update ${displayName} to ${latestVerNormalized}`, branchName, 'main', body);
+        await execExports.exec('git', ['checkout', 'main']);
     }
     catch (error) {
-        coreExports.setFailed(error.message);
+        coreExports.setFailed(error instanceof Error ? error.message : 'Unknown error');
     }
 }
 

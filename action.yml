@@ -1,5 +1,7 @@
 name: Kubernetes Version Update Action
-description: Automatically updates application versions in YAML files and creates PRs with AI risk analysis.
+description:
+  Automatically updates application versions in YAML files and creates PRs with
+  AI risk analysis.
 author: alecdivito
 
 branding:
@@ -12,7 +14,9 @@ inputs:
     required: true
     default: ${{ github.token }}
   repo:
-    description: Repository where the application source or image is located (e.g., owner/repo).
+    description:
+      Repository where the application source or image is located (e.g.,
+      owner/repo).
     required: true
   type:
     description: Type of update (kubernetes or helm).
@@ -23,26 +27,35 @@ inputs:
     required: true
     default: github
   targets:
-    description: JSON array of target files and paths to update (e.g., '[{"file": "deploy.yaml", "path": "image"}]').
+    description:
+      'JSON array of target files and paths to update (e.g., ''[{"file":
+      "deploy.yaml", "path": "image"}]'').'
     required: true
+    type: string
   release_filter:
     description: Optional filter for releases (e.g., a prefix or substring).
     required: false
+    type: string
   openai_base_url:
     description: Base URL for OpenAI API.
     required: false
+    type: string
   openai_model:
     description: Model name for OpenAI API.
     required: false
+    type: string
   openai_api_key:
     description: API key for OpenAI.
     required: false
+    type: string
   max_releases:
     description: Maximum number of releases to analyze.
     required: false
     default: 'Infinity'
   dry_run:
-    description: If true, only log changes and do not perform git operations or PR creation.
+    description:
+      If true, only log changes and do not perform git operations or PR
+      creation.
     required: false
     default: 'false'
 
