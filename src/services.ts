@@ -69,7 +69,8 @@ export class GitHubService {
     title: string,
     head: string,
     base: string,
-    body: string
+    body: string,
+    labels: { name: string; color: string }[] = []
   ): Promise<void> {
     // Check if PR already exists
     const { data: pullRequests } = await this.octokit.rest.pulls.list({
@@ -80,8 +81,10 @@ export class GitHubService {
       state: 'open'
     })
 
+    let prNumber: number
+
     if (pullRequests.length > 0) {
-      const prNumber = pullRequests[0].number
+      prNumber = pullRequests[0].number
       log(`☎️  Updating existing Pull Request #${prNumber}: ${title}`)
       await this.octokit.rest.pulls.update({
         owner,
@@ -92,13 +95,43 @@ export class GitHubService {
       })
     } else {
       log(`☎️  Creating new Pull Request: ${title}`)
-      await this.octokit.rest.pulls.create({
+      const { data: newPr } = await this.octokit.rest.pulls.create({
         owner,
         repo,
         title,
         head,
         base,
         body
+      })
+      prNumber = newPr.number
+    }
+
+    if (labels.length > 0) {
+      log(`🏷️  Ensuring labels exist: ${labels.map((l) => l.name).join(', ')}`)
+      for (const label of labels) {
+        try {
+          await this.octokit.rest.issues.getLabel({
+            owner,
+            repo,
+            name: label.name
+          })
+        } catch {
+          log(`➕ Creating missing label: ${label.name}`)
+          await this.octokit.rest.issues.createLabel({
+            owner,
+            repo,
+            name: label.name,
+            color: label.color
+          })
+        }
+      }
+
+      log(`☎️  Adding labels to PR #${prNumber}`)
+      await this.octokit.rest.issues.addLabels({
+        owner,
+        repo,
+        issue_number: prNumber,
+        labels: labels.map((l) => l.name)
       })
     }
   }

@@ -39512,7 +39512,7 @@ class GitHubService {
         }
         return allReleases;
     }
-    async createOrUpdatePullRequest(owner, repo, title, head, base, body) {
+    async createOrUpdatePullRequest(owner, repo, title, head, base, body, labels = []) {
         // Check if PR already exists
         const { data: pullRequests } = await this.octokit.rest.pulls.list({
             owner,
@@ -39521,8 +39521,9 @@ class GitHubService {
             base,
             state: 'open'
         });
+        let prNumber;
         if (pullRequests.length > 0) {
-            const prNumber = pullRequests[0].number;
+            prNumber = pullRequests[0].number;
             log(`☎️  Updating existing Pull Request #${prNumber}: ${title}`);
             await this.octokit.rest.pulls.update({
                 owner,
@@ -39534,13 +39535,42 @@ class GitHubService {
         }
         else {
             log(`☎️  Creating new Pull Request: ${title}`);
-            await this.octokit.rest.pulls.create({
+            const { data: newPr } = await this.octokit.rest.pulls.create({
                 owner,
                 repo,
                 title,
                 head,
                 base,
                 body
+            });
+            prNumber = newPr.number;
+        }
+        if (labels.length > 0) {
+            log(`🏷️  Ensuring labels exist: ${labels.map((l) => l.name).join(', ')}`);
+            for (const label of labels) {
+                try {
+                    await this.octokit.rest.issues.getLabel({
+                        owner,
+                        repo,
+                        name: label.name
+                    });
+                }
+                catch {
+                    log(`➕ Creating missing label: ${label.name}`);
+                    await this.octokit.rest.issues.createLabel({
+                        owner,
+                        repo,
+                        name: label.name,
+                        color: label.color
+                    });
+                }
+            }
+            log(`☎️  Adding labels to PR #${prNumber}`);
+            await this.octokit.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: prNumber,
+                labels: labels.map((l) => l.name)
             });
         }
     }
@@ -43763,7 +43793,23 @@ async function run() {
         }
         prBody += `\n---\n<details>\n<summary>📄 Full Execution Logs</summary>\n\n\`\`\`text\n${getLogBuffer()}\n\`\`\`\n</details>\n`;
         const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
-        await ghService.createOrUpdatePullRequest(contextOwner, contextRepo, prTitle, branchName, 'main', prBody);
+        const labels = [];
+        if (aiAssessment) {
+            const riskColors = {
+                None: '0e8a16',
+                Low: 'fbca04',
+                Medium: 'e99695',
+                High: 'd93f0b'
+            };
+            labels.push({
+                name: `Risk: ${aiAssessment.overallRisk}`,
+                color: riskColors[aiAssessment.overallRisk] || 'cccccc'
+            });
+            if (aiAssessment.overallWorryFree) {
+                labels.push({ name: 'Worry-free', color: 'c2e0c6' });
+            }
+        }
+        await ghService.createOrUpdatePullRequest(contextOwner, contextRepo, prTitle, branchName, 'main', prBody, labels);
         await execExports.exec('git', ['checkout', 'main']);
     }
     catch (error) {

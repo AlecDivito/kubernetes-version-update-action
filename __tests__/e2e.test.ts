@@ -20,9 +20,14 @@ const mockGithub = {
         listReleases: jest.fn()
       },
       pulls: {
-        create: jest.fn(),
+        create: jest.fn().mockReturnValue({ data: { number: 123 } }),
         update: jest.fn(),
         list: jest.fn().mockReturnValue({ data: [] })
+      },
+      issues: {
+        getLabel: jest.fn(),
+        createLabel: jest.fn(),
+        addLabels: jest.fn()
       }
     }
   }),
@@ -34,10 +39,11 @@ const mockGithub = {
   }
 }
 
+const mockOpenAICreate = jest.fn()
 const mockOpenAI = jest.fn().mockImplementation(() => ({
   chat: {
     completions: {
-      create: jest.fn()
+      create: mockOpenAICreate
     }
   }
 }))
@@ -56,7 +62,7 @@ describe('End-to-End Version Update Action', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    process.env.GITHUB_REPOSITORY = 'alecdivito/homelab'
+    process.env.GITHUB_REPOSITORY = 'test-owner/test-repo'
 
     // Default Inputs
     ;(mockCore.getInput as jest.Mock).mockImplementation((name: unknown) => {
@@ -185,6 +191,19 @@ describe('End-to-End Version Update Action', () => {
       expect.objectContaining({
         title: 'chore: update repo from 1.0.0 to 1.1.0',
         body: expect.stringContaining('AI Risk Assessment')
+      })
+    )
+
+    // Verify Labels
+    expect(octokit.rest.issues.getLabel).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Risk: Low' })
+    )
+    expect(octokit.rest.issues.getLabel).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Worry-free' })
+    )
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: expect.arrayContaining(['Risk: Low', 'Worry-free'])
       })
     )
   })

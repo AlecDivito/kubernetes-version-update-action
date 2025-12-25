@@ -274,13 +274,32 @@ export async function run(): Promise<void> {
 
     const [contextOwner, contextRepo] =
       process.env.GITHUB_REPOSITORY!.split('/')
+
+    const labels: { name: string; color: string }[] = []
+    if (aiAssessment) {
+      const riskColors: Record<string, string> = {
+        None: '0e8a16',
+        Low: 'fbca04',
+        Medium: 'e99695',
+        High: 'd93f0b'
+      }
+      labels.push({
+        name: `Risk: ${aiAssessment.overallRisk}`,
+        color: riskColors[aiAssessment.overallRisk] || 'cccccc'
+      })
+      if (aiAssessment.overallWorryFree) {
+        labels.push({ name: 'Worry-free', color: 'c2e0c6' })
+      }
+    }
+
     await ghService.createOrUpdatePullRequest(
       contextOwner,
       contextRepo,
       prTitle,
       branchName,
       'main',
-      prBody
+      prBody,
+      labels
     )
 
     await exec.exec('git', ['checkout', 'main'])
