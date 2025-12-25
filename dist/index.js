@@ -39420,27 +39420,40 @@ OpenAI.Evals = Evals;
 OpenAI.Containers = Containers;
 OpenAI.Videos = Videos;
 
+let globalDryRun = false;
+const logBuffer = [];
+function setGlobalDryRun(dryRun) {
+    globalDryRun = dryRun;
+}
+function getLogBuffer() {
+    return logBuffer.join('\n');
+}
 function normalizeVersion(v) {
     if (!v)
         return '';
     const match = v.match(/(\d+\.\d+.*)$/);
     return match ? match[1] : v.replace(/^v/, '');
 }
-let globalDryRun = false;
-function setGlobalDryRun(dryRun) {
-    globalDryRun = dryRun;
+function getRelevantReleases(releases, currentVersion, maxReleases) {
+    const cur = normalizeVersion(currentVersion);
+    const relevant = [];
+    for (const r of releases) {
+        const tag = normalizeVersion(r.tag_name);
+        if (tag === cur)
+            break;
+        relevant.push(r);
+        if (relevant.length >= maxReleases)
+            break;
+    }
+    return relevant;
 }
 function log(message, dryRun = globalDryRun) {
     const prefix = dryRun ? '[DRY RUN] ' : '';
-    if (message.includes('\n')) {
-        // For multiline messages, prefix each line
-        const lines = message.split('\n');
-        for (const line of lines) {
-            coreExports.info(`${prefix}${line}`);
-        }
-    }
-    else {
-        coreExports.info(`${prefix}${message}`);
+    const lines = message.split('\n');
+    for (const line of lines) {
+        const formatted = `${prefix}${line}`;
+        coreExports.info(formatted);
+        logBuffer.push(formatted);
     }
 }
 function formatRisk(risk) {
@@ -43555,6 +43568,7 @@ function setYamlValue(file, path, newValue, type, dryRun) {
 
 async function run() {
     try {
+        const maxReleasesInput = coreExports.getInput('max_releases');
         const config = {
             repo: coreExports.getInput('repo', { required: true }),
             type: coreExports.getInput('type'),
@@ -43566,10 +43580,9 @@ async function run() {
                 model: coreExports.getInput('openai_model'),
                 apiKey: coreExports.getInput('openai_api_key')
             },
-            maxReleases: coreExports.getInput('max_releases') === 'Infinity' ||
-                !coreExports.getInput('max_releases')
+            maxReleases: maxReleasesInput === 'Infinity' || !maxReleasesInput
                 ? Infinity
-                : parseInt(coreExports.getInput('max_releases')),
+                : parseInt(maxReleasesInput),
             dryRun: coreExports.getInput('dry_run') === 'true',
             githubToken: coreExports.getInput('github_token', { required: true })
         };
@@ -43577,7 +43590,7 @@ async function run() {
         const [owner, repoName] = config.repo.includes('/')
             ? config.repo.split('/')
             : [null, config.repo];
-        const displayName = repoName;
+        const displayName = repoName || config.repo;
         const ghService = new GitHubService(config.githubToken);
         const dhService = new DockerHubService();
         const aiService = new OpenAIService(config.openaiConfig);
@@ -43588,7 +43601,7 @@ async function run() {
             latestRelease = await dhService.fetchLatestTag(config.repo);
         }
         else {
-            if (!owner)
+            if (!owner || !repoName)
                 throw new Error(`Invalid repo format for GitHub source: ${config.repo}`);
             const firstTarget = config.targets[0];
             let currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || '';
@@ -43633,10 +43646,16 @@ async function run() {
             return;
         }
         log(`💡 Latest version is ${latestRelease.tag_name} (${latestVerNormalized})`);
+        // Get all releases that are part of this update
+        const currentVerRawForReleases = updatesNeeded[0].currentVerRaw;
+        const sourceReleases = config.source === 'dockerhub' ? [latestRelease] : releases;
+        const relevantReleases = getRelevantReleases(sourceReleases, currentVerRawForReleases, config.maxReleases);
         let aiAssessment = null;
-        if (config.openaiConfig?.apiKey) {
-            const currentVer = updatesNeeded[0].currentVerRaw;
-            aiAssessment = await aiService.analyzeRisks(displayName, currentVer, config.source === 'dockerhub' ? [latestRelease] : releases, config.openaiConfig.model, config.maxReleases);
+        if (config.openaiConfig?.apiKey && relevantReleases.length > 0) {
+            aiAssessment = await aiService.analyzeRisks(displayName, currentVerRawForReleases, relevantReleases, config.openaiConfig.model, config.maxReleases);
+        }
+        else if (relevantReleases.length > 0) {
+            log('⚠️ AI analysis skipped: OPENAI_API_KEY is not configured.');
         }
         log(`🚀 Updating ${displayName} (${config.repo}): ${updatesNeeded.length} target(s) need updates`);
         if (aiAssessment) {
@@ -43649,6 +43668,15 @@ async function run() {
                 if (rel.risk !== 'None' && rel.recommendations) {
                     log(`     💡 Recommendation: ${rel.recommendations}`);
                 }
+            }
+        }
+        else {
+            log(`📦 Found ${relevantReleases.length} release(s) to apply.`);
+            for (const rel of relevantReleases) {
+                const dateStr = rel.published_at
+                    ? new Date(rel.published_at).toLocaleDateString()
+                    : 'unknown date';
+                log(`   - ${rel.tag_name} (${dateStr})`);
             }
         }
         const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(/\//g, '-');
@@ -43666,12 +43694,6 @@ async function run() {
             return;
         }
         // Git Operations
-        await execExports.exec('git', ['config', 'user.name', 'github-actions[bot]']);
-        await execExports.exec('git', [
-            'config',
-            'user.email',
-            'github-actions[bot]@users.noreply.github.com'
-        ]);
         await execExports.exec('git', ['checkout', '-b', branchName]);
         for (const update of updatesNeeded) {
             log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
@@ -43685,21 +43707,34 @@ async function run() {
         ]);
         await execExports.exec('git', ['push', 'origin', branchName]);
         // PR Creation
-        let body = `Automated version update for ${displayName}.\n\n[Latest Release Notes](${latestRelease.html_url})`;
+        let prBody = `Automated version update for **${displayName}**.\n\n`;
         if (aiAssessment) {
-            body += `\n\n### 🤖 AI Risk Assessment\n- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes' : 'No'}\n\n#### Detailed Release Summaries\n`;
+            prBody += `### 🤖 AI Risk Assessment\n`;
+            prBody += `- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n`;
+            prBody += `- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes ✅' : 'No ⚠️'}\n\n`;
+            prBody += `#### Detailed Release Summaries\n`;
             for (const rel of aiAssessment.releases) {
                 const dateStr = rel.published_at
                     ? new Date(rel.published_at).toLocaleDateString()
                     : 'unknown date';
-                body += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n  ${rel.summary}\n`;
+                prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n  ${rel.summary}\n`;
                 if (rel.risk !== 'None' && rel.recommendations) {
-                    body += `  > **💡 Recommendation:** ${rel.recommendations}\n`;
+                    prBody += `  > **💡 Recommendation:** ${rel.recommendations}\n`;
                 }
             }
         }
+        else {
+            prBody += `### 📦 Included Releases\n`;
+            for (const rel of relevantReleases) {
+                const dateStr = rel.published_at
+                    ? new Date(rel.published_at).toLocaleDateString()
+                    : 'unknown date';
+                prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr})\n`;
+            }
+        }
+        prBody += `\n---\n<details>\n<summary>📄 Full Execution Logs</summary>\n\n\`\`\`text\n${getLogBuffer()}\n\`\`\`\n</details>\n`;
         const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
-        await ghService.createPullRequest(contextOwner, contextRepo, `chore: update ${displayName} to ${latestVerNormalized}`, branchName, 'main', body);
+        await ghService.createPullRequest(contextOwner, contextRepo, `chore: update ${displayName} to ${latestVerNormalized}`, branchName, 'main', prBody);
         await execExports.exec('git', ['checkout', 'main']);
     }
     catch (error) {

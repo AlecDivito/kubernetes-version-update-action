@@ -3,10 +3,18 @@ import * as exec from '@actions/exec'
 import { AppConfig, Release, Target } from './types.js'
 import { GitHubService, DockerHubService, OpenAIService } from './services.js'
 import { getYamlValue, setYamlValue } from './file-updater.js'
-import { log, normalizeVersion, formatRisk, setGlobalDryRun } from './utils.js'
+import {
+  log,
+  normalizeVersion,
+  formatRisk,
+  setGlobalDryRun,
+  getRelevantReleases,
+  getLogBuffer
+} from './utils.js'
 
 export async function run(): Promise<void> {
   try {
+    const maxReleasesInput = core.getInput('max_releases')
     const config: AppConfig = {
       repo: core.getInput('repo', { required: true }),
       type: core.getInput('type') as 'kubernetes' | 'helm',
@@ -19,10 +27,9 @@ export async function run(): Promise<void> {
         apiKey: core.getInput('openai_api_key')
       },
       maxReleases:
-        core.getInput('max_releases') === 'Infinity' ||
-        !core.getInput('max_releases')
+        maxReleasesInput === 'Infinity' || !maxReleasesInput
           ? Infinity
-          : parseInt(core.getInput('max_releases')),
+          : parseInt(maxReleasesInput),
       dryRun: core.getInput('dry_run') === 'true',
       githubToken: core.getInput('github_token', { required: true })
     }
@@ -33,7 +40,7 @@ export async function run(): Promise<void> {
       ? config.repo.split('/')
       : [null, config.repo]
 
-    const displayName = repoName
+    const displayName = repoName || config.repo
 
     const ghService = new GitHubService(config.githubToken)
     const dhService = new DockerHubService()
@@ -41,13 +48,13 @@ export async function run(): Promise<void> {
 
     log(`🪄 Processing application "${displayName}"`)
 
-    let latestRelease: Release
+    let latestRelease: Release | undefined
     let releases: Release[] = []
 
     if (config.source === 'dockerhub') {
       latestRelease = await dhService.fetchLatestTag(config.repo)
     } else {
-      if (!owner)
+      if (!owner || !repoName)
         throw new Error(`Invalid repo format for GitHub source: ${config.repo}`)
       const firstTarget = config.targets[0]
       let currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || ''
@@ -122,21 +129,33 @@ export async function run(): Promise<void> {
       `💡 Latest version is ${latestRelease.tag_name} (${latestVerNormalized})`
     )
 
+    // Get all releases that are part of this update
+    const currentVerRawForReleases = updatesNeeded[0].currentVerRaw
+    const sourceReleases =
+      config.source === 'dockerhub' ? [latestRelease] : releases
+    const relevantReleases = getRelevantReleases(
+      sourceReleases,
+      currentVerRawForReleases,
+      config.maxReleases
+    )
+
     let aiAssessment = null
-    if (config.openaiConfig?.apiKey) {
-      const currentVer = updatesNeeded[0].currentVerRaw
+    if (config.openaiConfig?.apiKey && relevantReleases.length > 0) {
       aiAssessment = await aiService.analyzeRisks(
         displayName,
-        currentVer,
-        config.source === 'dockerhub' ? [latestRelease] : releases,
+        currentVerRawForReleases,
+        relevantReleases,
         config.openaiConfig.model!,
         config.maxReleases
       )
+    } else if (relevantReleases.length > 0) {
+      log('⚠️ AI analysis skipped: OPENAI_API_KEY is not configured.')
     }
 
     log(
       `🚀 Updating ${displayName} (${config.repo}): ${updatesNeeded.length} target(s) need updates`
     )
+
     if (aiAssessment) {
       log(
         `📊 AI Overall Risk: [${formatRisk(aiAssessment.overallRisk)}] ${aiAssessment.overallWorryFree ? '✅ Worry-free' : '⚠️ Proceed with caution'}`
@@ -151,6 +170,14 @@ export async function run(): Promise<void> {
         if (rel.risk !== 'None' && rel.recommendations) {
           log(`     💡 Recommendation: ${rel.recommendations}`)
         }
+      }
+    } else {
+      log(`📦 Found ${relevantReleases.length} release(s) to apply.`)
+      for (const rel of relevantReleases) {
+        const dateStr = rel.published_at
+          ? new Date(rel.published_at).toLocaleDateString()
+          : 'unknown date'
+        log(`   - ${rel.tag_name} (${dateStr})`)
       }
     }
 
@@ -184,12 +211,6 @@ export async function run(): Promise<void> {
     }
 
     // Git Operations
-    await exec.exec('git', ['config', 'user.name', 'github-actions[bot]'])
-    await exec.exec('git', [
-      'config',
-      'user.email',
-      'github-actions[bot]@users.noreply.github.com'
-    ])
     await exec.exec('git', ['checkout', '-b', branchName])
 
     for (const update of updatesNeeded) {
@@ -214,19 +235,33 @@ export async function run(): Promise<void> {
     await exec.exec('git', ['push', 'origin', branchName])
 
     // PR Creation
-    let body = `Automated version update for ${displayName}.\n\n[Latest Release Notes](${latestRelease.html_url})`
+    let prBody = `Automated version update for **${displayName}**.\n\n`
+
     if (aiAssessment) {
-      body += `\n\n### 🤖 AI Risk Assessment\n- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes' : 'No'}\n\n#### Detailed Release Summaries\n`
+      prBody += `### 🤖 AI Risk Assessment\n`
+      prBody += `- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n`
+      prBody += `- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes ✅' : 'No ⚠️'}\n\n`
+      prBody += `#### Detailed Release Summaries\n`
       for (const rel of aiAssessment.releases) {
         const dateStr = rel.published_at
           ? new Date(rel.published_at).toLocaleDateString()
           : 'unknown date'
-        body += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n  ${rel.summary}\n`
+        prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n  ${rel.summary}\n`
         if (rel.risk !== 'None' && rel.recommendations) {
-          body += `  > **💡 Recommendation:** ${rel.recommendations}\n`
+          prBody += `  > **💡 Recommendation:** ${rel.recommendations}\n`
         }
       }
+    } else {
+      prBody += `### 📦 Included Releases\n`
+      for (const rel of relevantReleases) {
+        const dateStr = rel.published_at
+          ? new Date(rel.published_at).toLocaleDateString()
+          : 'unknown date'
+        prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr})\n`
+      }
     }
+
+    prBody += `\n---\n<details>\n<summary>📄 Full Execution Logs</summary>\n\n\`\`\`text\n${getLogBuffer()}\n\`\`\`\n</details>\n`
 
     const [contextOwner, contextRepo] =
       process.env.GITHUB_REPOSITORY!.split('/')
@@ -236,7 +271,7 @@ export async function run(): Promise<void> {
       `chore: update ${displayName} to ${latestVerNormalized}`,
       branchName,
       'main',
-      body
+      prBody
     )
 
     await exec.exec('git', ['checkout', 'main'])
