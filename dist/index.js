@@ -43666,6 +43666,12 @@ async function run() {
             return;
         }
         // Git Operations
+        await execExports.exec('git', ['config', 'user.name', 'github-actions[bot]']);
+        await execExports.exec('git', [
+            'config',
+            'user.email',
+            'github-actions[bot]@users.noreply.github.com'
+        ]);
         await execExports.exec('git', ['checkout', '-b', branchName]);
         for (const update of updatesNeeded) {
             log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);

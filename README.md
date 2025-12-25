@@ -1,5 +1,7 @@
 # Version Update Action
 
+![Code coverage](./badges/coverage.svg)
+
 A GitHub Action that automatically updates application versions in YAML files
 (Kubernetes manifests or Helm charts) and creates Pull Requests with an
 AI-powered risk assessment.
@@ -33,6 +35,7 @@ jobs:
       - id: set-matrix
         name: Generate Matrix
         run: |
+          npm install js-yaml
           node -e "
           const fs = require('fs');
           const yaml = require('js-yaml');
