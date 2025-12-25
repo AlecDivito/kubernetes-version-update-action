@@ -31,7 +31,9 @@ export async function run(): Promise<void> {
           ? Infinity
           : parseInt(maxReleasesInput),
       dryRun: core.getInput('dry_run') === 'true',
-      githubToken: core.getInput('github_token', { required: true })
+      githubToken: core.getInput('github_token', { required: true }),
+      gitUserName: core.getInput('git_user_name'),
+      gitUserEmail: core.getInput('git_user_email')
     }
 
     setGlobalDryRun(config.dryRun)
@@ -195,6 +197,8 @@ export async function run(): Promise<void> {
     const prTitle = `chore: update ${displayName} from ${currentVersionFrom} to ${latestVerNormalized}`
 
     if (config.dryRun) {
+      log(`💻 git config user.name "${config.gitUserName}"`)
+      log(`💻 git config user.email "${config.gitUserEmail}"`)
       log(`💻 git checkout -B ${branchName}`)
       for (const update of updatesNeeded) {
         log(
@@ -218,6 +222,8 @@ export async function run(): Promise<void> {
 
     // Git Operations
     // -B will create the branch if it doesn't exist, or reset it if it does
+    await exec.exec('git', ['config', 'user.name', config.gitUserName])
+    await exec.exec('git', ['config', 'user.email', config.gitUserEmail])
     await exec.exec('git', ['checkout', '-B', branchName])
 
     for (const update of updatesNeeded) {

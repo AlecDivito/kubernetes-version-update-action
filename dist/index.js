@@ -43605,7 +43605,9 @@ async function run() {
                 ? Infinity
                 : parseInt(maxReleasesInput),
             dryRun: coreExports.getInput('dry_run') === 'true',
-            githubToken: coreExports.getInput('github_token', { required: true })
+            githubToken: coreExports.getInput('github_token', { required: true }),
+            gitUserName: coreExports.getInput('git_user_name'),
+            gitUserEmail: coreExports.getInput('git_user_email')
         };
         setGlobalDryRun(config.dryRun);
         const [owner, repoName] = config.repo.includes('/')
@@ -43707,6 +43709,8 @@ async function run() {
         const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(/\//g, '-');
         const prTitle = `chore: update ${displayName} from ${currentVersionFrom} to ${latestVerNormalized}`;
         if (config.dryRun) {
+            log(`💻 git config user.name "${config.gitUserName}"`);
+            log(`💻 git config user.email "${config.gitUserEmail}"`);
             log(`💻 git checkout -B ${branchName}`);
             for (const update of updatesNeeded) {
                 log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
@@ -43721,6 +43725,8 @@ async function run() {
         }
         // Git Operations
         // -B will create the branch if it doesn't exist, or reset it if it does
+        await execExports.exec('git', ['config', 'user.name', config.gitUserName]);
+        await execExports.exec('git', ['config', 'user.email', config.gitUserEmail]);
         await execExports.exec('git', ['checkout', '-B', branchName]);
         for (const update of updatesNeeded) {
             log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);

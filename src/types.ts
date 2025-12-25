@@ -17,6 +17,8 @@ export interface AppConfig {
   maxReleases: number
   dryRun: boolean
   githubToken: string
+  gitUserName: string
+  gitUserEmail: string
 }
 
 export interface Release {
