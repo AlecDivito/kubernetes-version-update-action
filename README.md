@@ -90,19 +90,19 @@ applications:
 
 ## Inputs
 
-| Name              | Description                                                                     | Required | Default               |
-| ----------------- | ------------------------------------------------------------------------------- | -------- | --------------------- |
-| `github_token`    | GitHub token for API requests and Git operations.                               | Yes      | `${{ github.token }}` |
+| Name              | Description                                                                           | Required | Default               |
+| ----------------- | ------------------------------------------------------------------------------------- | -------- | --------------------- |
+| `github_token`    | GitHub token for API requests and Git operations.                                     | Yes      | `${{ github.token }}` |
 | `repo`            | Repository where the application source or image is located (e.g., owner/repository). | Yes      | -                     |
-| `type`            | Type of update (`kubernetes` or `helm`).                                        | Yes      | `kubernetes`          |
-| `source`          | Source of version information (`github` or `dockerhub`).                        | Yes      | `github`              |
-| `targets`         | JSON array of target files and paths to update.                                 | Yes      | -                     |
-| `release_filter`  | Optional filter for releases.                                                   | No       | -                     |
-| `openai_base_url` | Base URL for OpenAI API.                                                        | No       | -                     |
-| `openai_model`    | Model name for OpenAI API.                                                      | No       | -                     |
-| `openai_api_key`  | API key for OpenAI.                                                             | No       | -                     |
-| `max_releases`    | Maximum number of releases to analyze.                                          | No       | `Infinity`            |
-| `dry_run`         | If `true`, only log changes and do not perform Git operations or PR creation.   | No       | `false`               |
+| `type`            | Type of update (`kubernetes` or `helm`).                                              | Yes      | `kubernetes`          |
+| `source`          | Source of version information (`github` or `dockerhub`).                              | Yes      | `github`              |
+| `targets`         | JSON array of target files and paths to update.                                       | Yes      | -                     |
+| `release_filter`  | Optional filter for releases.                                                         | No       | -                     |
+| `openai_base_url` | Base URL for OpenAI API.                                                              | No       | -                     |
+| `openai_model`    | Model name for OpenAI API.                                                            | No       | -                     |
+| `openai_api_key`  | API key for OpenAI.                                                                   | No       | -                     |
+| `max_releases`    | Maximum number of releases to analyze.                                                | No       | `Infinity`            |
+| `dry_run`         | If `true`, only log changes and do not perform Git operations or PR creation.         | No       | `false`               |
 
 ## Local Development & Testing
 
