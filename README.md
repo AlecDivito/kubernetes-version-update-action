@@ -93,7 +93,7 @@ applications:
 | Name              | Description                                                                     | Required | Default               |
 | ----------------- | ------------------------------------------------------------------------------- | -------- | --------------------- |
 | `github_token`    | GitHub token for API requests and Git operations.                               | Yes      | `${{ github.token }}` |
-| `repo`            | Repository where the application source or image is located (e.g., owner/Repo). | Yes      | -                     |
+| `repo`            | Repository where the application source or image is located (e.g., owner/repository). | Yes      | -                     |
 | `type`            | Type of update (`kubernetes` or `helm`).                                        | Yes      | `kubernetes`          |
 | `source`          | Source of version information (`github` or `dockerhub`).                        | Yes      | `github`              |
 | `targets`         | JSON array of target files and paths to update.                                 | Yes      | -                     |
