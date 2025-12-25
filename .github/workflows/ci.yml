@@ -1,0 +1,49 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        id: setup-node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install Dependencies
+        id: npm-ci
+        run: npm ci
+
+      - name: Check format and lint
+        run: |
+          npm run format:check
+          npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Package
+        run: npm run package
+
+      - name: Verify dist
+        run: |
+          if [ -n "$(git status --porcelain dist)" ]; then
+            echo "::error::The dist/ directory is out of sync with src/. Please run 'npm run package' and commit the changes."
+            exit 1
+          fi

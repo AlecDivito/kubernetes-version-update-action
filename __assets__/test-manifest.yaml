@@ -1,0 +1,4 @@
+# test-manifest.yaml
+spec:
+  source:
+    targetRevision: 26.0.0

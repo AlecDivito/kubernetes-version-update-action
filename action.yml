@@ -1,0 +1,51 @@
+name: Version Update Action
+description: Automatically updates application versions in YAML files and creates PRs with AI risk analysis.
+author: alecdivito
+
+branding:
+  icon: refresh-cw
+  color: green
+
+inputs:
+  github_token:
+    description: GitHub token for API requests and git operations.
+    required: true
+    default: ${{ github.token }}
+  repo:
+    description: Repository where the application source or image is located (e.g., owner/repo).
+    required: true
+  type:
+    description: Type of update (kubernetes or helm).
+    required: true
+    default: kubernetes
+  source:
+    description: Source of version information (github or dockerhub).
+    required: true
+    default: github
+  targets:
+    description: JSON array of target files and paths to update (e.g., '[{"file": "deploy.yaml", "path": "image"}]').
+    required: true
+  release_filter:
+    description: Optional filter for releases (e.g., a prefix or substring).
+    required: false
+  openai_base_url:
+    description: Base URL for OpenAI API.
+    required: false
+  openai_model:
+    description: Model name for OpenAI API.
+    required: false
+  openai_api_key:
+    description: API key for OpenAI.
+    required: false
+  max_releases:
+    description: Maximum number of releases to analyze.
+    required: false
+    default: 'Infinity'
+  dry_run:
+    description: If true, only log changes and do not perform git operations or PR creation.
+    required: false
+    default: 'false'
+
+runs:
+  using: node24
+  main: dist/index.js
