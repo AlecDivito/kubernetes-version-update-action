@@ -97,10 +97,16 @@ export async function run(): Promise<void> {
       targetVersion: string
     }[] = []
 
+    let currentVersionFrom = ''
+
     for (const target of config.targets) {
       let currentVerRaw = getYamlValue(target.file, target.path) || ''
       if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
         currentVerRaw = currentVerRaw.split(':')[1]
+      }
+
+      if (!currentVersionFrom) {
+        currentVersionFrom = normalizeVersion(currentVerRaw)
       }
 
       const currentVerNormalized = normalizeVersion(currentVerRaw)
@@ -186,8 +192,10 @@ export async function run(): Promise<void> {
       '-'
     )
 
+    const prTitle = `chore: update ${displayName} from ${currentVersionFrom} to ${latestVerNormalized}`
+
     if (config.dryRun) {
-      log(`💻 git checkout -b ${branchName}`)
+      log(`💻 git checkout -B ${branchName}`)
       for (const update of updatesNeeded) {
         log(
           `   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`
@@ -201,17 +209,16 @@ export async function run(): Promise<void> {
         )
         log(`💻 git add ${update.target.file}`)
       }
-      log(
-        `💻 git commit -m "chore: bump ${displayName} to ${latestVerNormalized}"`
-      )
-      log(`💻 git push origin ${branchName}`)
+      log(`💻 git commit -m "${prTitle}"`)
+      log(`💻 git push origin ${branchName} --force`)
       log(`💻 git checkout main`)
       log(`\n👏 All checks completed.`)
       return
     }
 
     // Git Operations
-    await exec.exec('git', ['checkout', '-b', branchName])
+    // -B will create the branch if it doesn't exist, or reset it if it does
+    await exec.exec('git', ['checkout', '-B', branchName])
 
     for (const update of updatesNeeded) {
       log(
@@ -227,12 +234,8 @@ export async function run(): Promise<void> {
       await exec.exec('git', ['add', update.target.file])
     }
 
-    await exec.exec('git', [
-      'commit',
-      '-m',
-      `chore: bump ${displayName} to ${latestVerNormalized}`
-    ])
-    await exec.exec('git', ['push', 'origin', branchName])
+    await exec.exec('git', ['commit', '-m', prTitle])
+    await exec.exec('git', ['push', 'origin', branchName, '--force'])
 
     // PR Creation
     let prBody = `Automated version update for **${displayName}**.\n\n`
@@ -265,10 +268,10 @@ export async function run(): Promise<void> {
 
     const [contextOwner, contextRepo] =
       process.env.GITHUB_REPOSITORY!.split('/')
-    await ghService.createPullRequest(
+    await ghService.createOrUpdatePullRequest(
       contextOwner,
       contextRepo,
-      `chore: update ${displayName} to ${latestVerNormalized}`,
+      prTitle,
       branchName,
       'main',
       prBody

@@ -39512,16 +39512,37 @@ class GitHubService {
         }
         return allReleases;
     }
-    async createPullRequest(owner, repo, title, head, base, body) {
-        log(`☎️  Creating Pull Request: ${title}`);
-        await this.octokit.rest.pulls.create({
+    async createOrUpdatePullRequest(owner, repo, title, head, base, body) {
+        // Check if PR already exists
+        const { data: pullRequests } = await this.octokit.rest.pulls.list({
             owner,
             repo,
-            title,
-            head,
+            head: `${owner}:${head}`,
             base,
-            body
+            state: 'open'
         });
+        if (pullRequests.length > 0) {
+            const prNumber = pullRequests[0].number;
+            log(`☎️  Updating existing Pull Request #${prNumber}: ${title}`);
+            await this.octokit.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: prNumber,
+                title,
+                body
+            });
+        }
+        else {
+            log(`☎️  Creating new Pull Request: ${title}`);
+            await this.octokit.rest.pulls.create({
+                owner,
+                repo,
+                title,
+                head,
+                base,
+                body
+            });
+        }
     }
 }
 class DockerHubService {
@@ -43626,10 +43647,14 @@ async function run() {
         }
         const latestVerNormalized = normalizeVersion(latestRelease.tag_name);
         const updatesNeeded = [];
+        let currentVersionFrom = '';
         for (const target of config.targets) {
             let currentVerRaw = getYamlValue(target.file, target.path) || '';
             if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
                 currentVerRaw = currentVerRaw.split(':')[1];
+            }
+            if (!currentVersionFrom) {
+                currentVersionFrom = normalizeVersion(currentVerRaw);
             }
             const currentVerNormalized = normalizeVersion(currentVerRaw);
             if (latestVerNormalized &&
@@ -43680,32 +43705,30 @@ async function run() {
             }
         }
         const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(/\//g, '-');
+        const prTitle = `chore: update ${displayName} from ${currentVersionFrom} to ${latestVerNormalized}`;
         if (config.dryRun) {
-            log(`💻 git checkout -b ${branchName}`);
+            log(`💻 git checkout -B ${branchName}`);
             for (const update of updatesNeeded) {
                 log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
                 setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, true);
                 log(`💻 git add ${update.target.file}`);
             }
-            log(`💻 git commit -m "chore: bump ${displayName} to ${latestVerNormalized}"`);
-            log(`💻 git push origin ${branchName}`);
+            log(`💻 git commit -m "${prTitle}"`);
+            log(`💻 git push origin ${branchName} --force`);
             log(`💻 git checkout main`);
             log(`\n👏 All checks completed.`);
             return;
         }
         // Git Operations
-        await execExports.exec('git', ['checkout', '-b', branchName]);
+        // -B will create the branch if it doesn't exist, or reset it if it does
+        await execExports.exec('git', ['checkout', '-B', branchName]);
         for (const update of updatesNeeded) {
             log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
             setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, false);
             await execExports.exec('git', ['add', update.target.file]);
         }
-        await execExports.exec('git', [
-            'commit',
-            '-m',
-            `chore: bump ${displayName} to ${latestVerNormalized}`
-        ]);
-        await execExports.exec('git', ['push', 'origin', branchName]);
+        await execExports.exec('git', ['commit', '-m', prTitle]);
+        await execExports.exec('git', ['push', 'origin', branchName, '--force']);
         // PR Creation
         let prBody = `Automated version update for **${displayName}**.\n\n`;
         if (aiAssessment) {
@@ -43734,7 +43757,7 @@ async function run() {
         }
         prBody += `\n---\n<details>\n<summary>📄 Full Execution Logs</summary>\n\n\`\`\`text\n${getLogBuffer()}\n\`\`\`\n</details>\n`;
         const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
-        await ghService.createPullRequest(contextOwner, contextRepo, `chore: update ${displayName} to ${latestVerNormalized}`, branchName, 'main', prBody);
+        await ghService.createOrUpdatePullRequest(contextOwner, contextRepo, prTitle, branchName, 'main', prBody);
         await execExports.exec('git', ['checkout', 'main']);
     }
     catch (error) {

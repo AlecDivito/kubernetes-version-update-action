@@ -63,7 +63,7 @@ export class GitHubService {
     return allReleases
   }
 
-  async createPullRequest(
+  async createOrUpdatePullRequest(
     owner: string,
     repo: string,
     title: string,
@@ -71,15 +71,36 @@ export class GitHubService {
     base: string,
     body: string
   ): Promise<void> {
-    log(`☎️  Creating Pull Request: ${title}`)
-    await this.octokit.rest.pulls.create({
+    // Check if PR already exists
+    const { data: pullRequests } = await this.octokit.rest.pulls.list({
       owner,
       repo,
-      title,
-      head,
+      head: `${owner}:${head}`,
       base,
-      body
+      state: 'open'
     })
+
+    if (pullRequests.length > 0) {
+      const prNumber = pullRequests[0].number
+      log(`☎️  Updating existing Pull Request #${prNumber}: ${title}`)
+      await this.octokit.rest.pulls.update({
+        owner,
+        repo,
+        pull_number: prNumber,
+        title,
+        body
+      })
+    } else {
+      log(`☎️  Creating new Pull Request: ${title}`)
+      await this.octokit.rest.pulls.create({
+        owner,
+        repo,
+        title,
+        head,
+        base,
+        body
+      })
+    }
   }
 }
 

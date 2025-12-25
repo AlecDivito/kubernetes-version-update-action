@@ -20,7 +20,9 @@ const mockGithub = {
         listReleases: jest.fn()
       },
       pulls: {
-        create: jest.fn()
+        create: jest.fn(),
+        update: jest.fn(),
+        list: jest.fn().mockReturnValue({ data: [] })
       }
     }
   }),
@@ -149,24 +151,25 @@ describe('End-to-End Version Update Action', () => {
     // Verify Git Commands
     expect(mockExec.exec).toHaveBeenCalledWith('git', [
       'checkout',
-      '-b',
+      '-B',
       expect.stringContaining('bot-update-repo-1.1.0')
     ])
     expect(mockExec.exec).toHaveBeenCalledWith('git', [
       'commit',
       '-m',
-      expect.stringContaining('chore: bump repo to 1.1.0')
+      expect.stringContaining('chore: update repo from 1.0.0 to 1.1.0')
     ])
     expect(mockExec.exec).toHaveBeenCalledWith('git', [
       'push',
       'origin',
-      expect.stringContaining('bot-update-repo-1.1.0')
+      expect.stringContaining('bot-update-repo-1.1.0'),
+      '--force'
     ])
 
     // Verify PR Creation
     expect(octokit.rest.pulls.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'chore: update repo to 1.1.0',
+        title: 'chore: update repo from 1.0.0 to 1.1.0',
         body: expect.stringContaining('AI Risk Assessment')
       })
     )
@@ -237,6 +240,39 @@ describe('End-to-End Version Update Action', () => {
 
     // No git commands should be run for commit/push
     expect(mockExec.exec).not.toHaveBeenCalled()
+    expect(octokit.rest.pulls.create).not.toHaveBeenCalled()
+  })
+
+  it('updates an existing PR if it already exists', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const octokit = mockGithub.getOctokit('fake-token') as any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(octokit.rest.repos.listReleases as any).mockResolvedValue({
+      data: [
+        {
+          tag_name: 'v1.1.0',
+          html_url: 'http://example.com/1.1.0',
+          published_at: '2023-01-01T00:00:00Z'
+        }
+      ]
+    })
+
+    // Mock existing PR
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(octokit.rest.pulls.list as any).mockResolvedValue({
+      data: [{ number: 123 }]
+    })
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (run as any)()
+
+    // Verify PR Update instead of Create
+    expect(octokit.rest.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pull_number: 123,
+        title: 'chore: update repo from 1.0.0 to 1.1.0'
+      })
+    )
     expect(octokit.rest.pulls.create).not.toHaveBeenCalled()
   })
 })
