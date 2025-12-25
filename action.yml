@@ -1,4 +1,4 @@
-name: Version Update Action
+name: Kubernetes Version Update Action
 description: Automatically updates application versions in YAML files and creates PRs with AI risk analysis.
 author: alecdivito
 
