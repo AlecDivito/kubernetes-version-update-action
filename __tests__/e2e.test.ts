@@ -84,6 +84,10 @@ describe('End-to-End Version Update Action', () => {
           return 'gpt-4'
         case 'openai_base_url':
           return 'https://api.openai.com/v1'
+        case 'git_user_name':
+          return 'github-actions[bot]'
+        case 'git_user_email':
+          return 'github-actions[bot]@users.noreply.github.com'
         default:
           return ''
       }
@@ -149,6 +153,16 @@ describe('End-to-End Version Update Action', () => {
     expect(updatedContent).toContain('myrepo/app:1.1.0')
 
     // Verify Git Commands
+    expect(mockExec.exec).toHaveBeenCalledWith('git', [
+      'config',
+      'user.name',
+      'github-actions[bot]'
+    ])
+    expect(mockExec.exec).toHaveBeenCalledWith('git', [
+      'config',
+      'user.email',
+      'github-actions[bot]@users.noreply.github.com'
+    ])
     expect(mockExec.exec).toHaveBeenCalledWith('git', [
       'checkout',
       '-B',

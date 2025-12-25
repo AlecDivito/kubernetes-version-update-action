@@ -43572,7 +43572,7 @@ function setYamlValue(file, path, newValue, type, dryRun) {
         replaceVal = `${repo}:${newValue}`;
     }
     const escapedOldValue = searchVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`^(\\s*(?:-\\s*)?${targetKey}:\\s*)${escapedOldValue}(.*)$`, 'm');
+    const regex = new RegExp(`^(\\s*(?:-\\s*)?${targetKey}:\\s*)(${escapedOldValue})(.*)$`, 'm');
     let newContent;
     if (!regex.test(content)) {
         const fallbackRegex = new RegExp(`^(\\s*(?:-\\s*)?${targetKey}:\\s*)([^#\\n]+)(.*)$`, 'm');

@@ -51,7 +51,7 @@ export function setYamlValue(
 
   const escapedOldValue = searchVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const regex = new RegExp(
-    `^(\\s*(?:-\\s*)?${targetKey}:\\s*)${escapedOldValue}(.*)$`,
+    `^(\\s*(?:-\\s*)?${targetKey}:\\s*)(${escapedOldValue})(.*)$`,
     'm'
   )
 
