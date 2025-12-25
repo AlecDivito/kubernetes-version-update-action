@@ -92,8 +92,8 @@ applications:
 
 | Name              | Description                                                                     | Required | Default               |
 | ----------------- | ------------------------------------------------------------------------------- | -------- | --------------------- |
-| `github_token`    | GitHub token for API requests and git operations.                               | Yes      | `${{ github.token }}` |
-| `repo`            | Repository where the application source or image is located (e.g., owner/repo). | Yes      | -                     |
+| `github_token`    | GitHub token for API requests and Git operations.                               | Yes      | `${{ github.token }}` |
+| `repo`            | Repository where the application source or image is located (e.g., owner/Repo). | Yes      | -                     |
 | `type`            | Type of update (`kubernetes` or `helm`).                                        | Yes      | `kubernetes`          |
 | `source`          | Source of version information (`github` or `dockerhub`).                        | Yes      | `github`              |
 | `targets`         | JSON array of target files and paths to update.                                 | Yes      | -                     |
@@ -102,7 +102,7 @@ applications:
 | `openai_model`    | Model name for OpenAI API.                                                      | No       | -                     |
 | `openai_api_key`  | API key for OpenAI.                                                             | No       | -                     |
 | `max_releases`    | Maximum number of releases to analyze.                                          | No       | `Infinity`            |
-| `dry_run`         | If `true`, only log changes and do not perform git operations or PR creation.   | No       | `false`               |
+| `dry_run`         | If `true`, only log changes and do not perform Git operations or PR creation.   | No       | `false`               |
 
 ## Local Development & Testing
 

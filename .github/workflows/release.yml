@@ -20,8 +20,8 @@ jobs:
         id: version
         run: |
           # Extract major version from tag (e.g., v1.2.3 -> v1)
-          TAG=${{ github.event.release.tag_name }}
-          MAJOR=$(echo $TAG | cut -d. -f1)
+          TAG="${{ github.event.release.tag_name }}"
+          MAJOR="$(echo $TAG | cut -d. -f1)"
           echo "major=$MAJOR" >> $GITHUB_OUTPUT
 
       - name: Update major tag
