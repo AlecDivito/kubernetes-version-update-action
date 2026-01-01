@@ -42,7 +42,10 @@ jobs:
           const config = yaml.load(fs.readFileSync('versions-config.yaml', 'utf8'));
           const matrix = {
             include: config.applications.map(app => {
-              const targets = app.targets || (app.file && app.path ? [{file: app.file, path: app.path}] : []);
+              const targets = app.targets || (app.file && app.path
+                ? [{file: app.file, path: app.path}]
+                : []
+              );
               return {
                 ...app,
                 targets: targets.length > 0 ? JSON.stringify(targets) : ''
