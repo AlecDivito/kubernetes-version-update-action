@@ -41,10 +41,13 @@ jobs:
           const yaml = require('js-yaml');
           const config = yaml.load(fs.readFileSync('versions-config.yaml', 'utf8'));
           const matrix = {
-            include: config.applications.map(app => ({
-              ...app,
-              targets: JSON.stringify(app.targets || [{file: app.file, path: app.path}])
-            }))
+            include: config.applications.map(app => {
+              const targets = app.targets || (app.file && app.path ? [{file: app.file, path: app.path}] : []);
+              return {
+                ...app,
+                targets: targets.length > 0 ? JSON.stringify(targets) : ''
+              };
+            })
           };
           console.log('matrix=' + JSON.stringify(matrix));
           " >> $GITHUB_OUTPUT
@@ -58,7 +61,7 @@ jobs:
       matrix: ${{ fromJson(needs.list-apps.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Update ${{ matrix.name }}
+      - name: Update ${{ matrix.repo }}
         uses: ./ # Path to this action
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -66,6 +69,8 @@ jobs:
           type: ${{ matrix.type }}
           source: ${{ matrix.source || 'github' }}
           targets: ${{ matrix.targets }}
+          version: ${{ matrix.version }}
+          description: ${{ matrix.description }}
           release_filter: ${{ matrix.releaseFilter }}
           openai_base_url: ${{ secrets.OPENAI_BASE_URL }}
           openai_model: ${{ secrets.OPENAI_MODEL }}
@@ -76,13 +81,11 @@ jobs:
 
 ```yaml
 applications:
-  - name: 'traefik'
-    repo: 'traefik/traefik-helm-chart'
+  - repo: 'traefik/traefik-helm-chart'
     type: 'helm'
     file: 'apps/templates/public-ingress.yaml'
     path: 'spec.source.targetRevision'
-  - name: 'busybox'
-    repo: 'busybox'
+  - repo: 'busybox'
     source: 'dockerhub'
     type: 'kubernetes'
     targets:
@@ -90,6 +93,13 @@ applications:
         path: 'spec.template.spec.initContainers.0.image'
       - file: 'services/vpn/wg-portal/deployment.yaml'
         path: 'spec.template.spec.initContainers.0.image'
+  - repo: 'argoproj/argo-cd'
+    type: 'manual'
+    version: '2.10.1'
+    description: |
+      ArgoCD is managed via a manual install script. When upgrading:
+      1. Run 'kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v{{version}}/manifests/install.yaml'
+      2. Verify all pods are running.
 ```
 
 ## Inputs
@@ -98,17 +108,19 @@ applications:
 | ----------------- | ------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
 | `github_token`    | GitHub token for API requests and Git operations.                                     | Yes      | `${{ github.token }}`                          |
 | `repo`            | Repository where the application source or image is located (e.g., owner/repository). | Yes      | -                                              |
-| `type`            | Type of update (`kubernetes` or `helm`).                                              | Yes      | `kubernetes`                                   |
+| `type`            | Type of update (`kubernetes`, `helm`, or `manual`).                                   | Yes      | `kubernetes`                                   |
 | `source`          | Source of version information (`github` or `dockerhub`).                              | Yes      | `github`                                       |
-| `targets`         | JSON array of target files and paths to update.                                       | Yes      | -                                              |
+| `targets`         | JSON array of target files and paths to update (Optional for `manual`).               | No       | -                                              |
+| `version`         | Current version of the application (Required for `manual`).                           | No       | -                                              |
+| `description`     | AI context/instructions for the application upgrade process.                          | No       | -                                              |
 | `release_filter`  | Optional filter for releases.                                                         | No       | -                                              |
 | `openai_base_url` | Base URL for OpenAI API.                                                              | No       | -                                              |
 | `openai_model`    | Model name for OpenAI API.                                                            | No       | -                                              |
 | `openai_api_key`  | API key for OpenAI.                                                                   | No       | -                                              |
 | `max_releases`    | Maximum number of releases to analyze.                                                | No       | `Infinity`                                     |
 | `dry_run`         | If `true`, only log changes and do not perform Git operations or PR creation.         | No       | `false`                                        |
-| `git_user_name`   | Name of the git user for commits.                                                     | No       | `github-actions[bot]`                          |
-| `git_user_email`  | Email of the git user for commits.                                                    | No       | `github-actions[bot]@users.noreply.github.com` |
+| `git_user_name`   | Name of the Git user for commits.                                                     | No       | `github-actions[bot]`                          |
+| `git_user_email`  | Email of the Git user for commits.                                                    | No       | `github-actions[bot]@users.noreply.github.com` |
 
 ## Local Development & Testing
 
@@ -127,6 +139,12 @@ INPUT_TYPE="helm"
 INPUT_SOURCE="github"
 INPUT_TARGETS='[{"file": "__assets__/test-manifest.yaml", "path": "spec.source.targetRevision"}]'
 INPUT_DRY_RUN="true"
+
+# For manual app testing:
+# INPUT_TYPE="manual"
+# INPUT_VERSION="1.0.0"
+# INPUT_REPO="argoproj/argo-cd"
+# INPUT_DESCRIPTION="Manual upgrade context..."
 
 # Required for PR simulation logic
 GITHUB_REPOSITORY="your-user/your-repo"

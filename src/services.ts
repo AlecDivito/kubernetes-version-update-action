@@ -192,7 +192,8 @@ export class OpenAIService {
   async analyzeRelease(
     appName: string,
     release: Release,
-    model: string
+    model: string,
+    description?: string
   ): Promise<RiskAssessment> {
     if (!this.openai) {
       return {
@@ -205,7 +206,11 @@ export class OpenAIService {
       }
     }
 
-    const prompt = `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".
+    const descriptionContext = description
+      ? `\nAdditional Context/Instructions for this application:\n${description}\n`
+      : ''
+
+    const prompt = `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".${descriptionContext}
 Release Name/Tag: ${release.name || release.tag_name}
 Release Notes:
 ${release.body || 'No release notes provided.'}
@@ -215,6 +220,7 @@ Task:
 2. Determine if this specific release should be "worry free" (true/false).
 3. Assign a risk level for this specific release: None, Low, Medium, or High.
 4. If risk is Low, Medium, or High, provide concise recommendations or required changes. If risk is None, this can be an empty string.
+5. If Additional Context/Instructions were provided, ensure the summary and recommendations take them into account.
 
 Respond ONLY in JSON format:
 {
@@ -259,7 +265,8 @@ Respond ONLY in JSON format:
     currentVersion: string,
     releases: Release[],
     model: string,
-    maxReleases: number
+    maxReleases: number,
+    description?: string
   ): Promise<AggregateRisk | null> {
     if (!this.openai || releases.length === 0) return null
 
@@ -279,7 +286,9 @@ Respond ONLY in JSON format:
       `🤖 Starting individual analysis for ${relevantReleases.length} releases...`
     )
     const assessments = await Promise.all(
-      relevantReleases.map((r) => this.analyzeRelease(appName, r, model))
+      relevantReleases.map((r) =>
+        this.analyzeRelease(appName, r, model, description)
+      )
     )
 
     const riskLevels: ('None' | 'Low' | 'Medium' | 'High')[] = [

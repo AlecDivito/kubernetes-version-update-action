@@ -39620,7 +39620,7 @@ class OpenAIService {
             });
         }
     }
-    async analyzeRelease(appName, release, model) {
+    async analyzeRelease(appName, release, model, description) {
         if (!this.openai) {
             return {
                 tag_name: release.tag_name,
@@ -39631,7 +39631,10 @@ class OpenAIService {
                 risk: 'High'
             };
         }
-        const prompt = `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".
+        const descriptionContext = description
+            ? `\nAdditional Context/Instructions for this application:\n${description}\n`
+            : '';
+        const prompt = `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".${descriptionContext}
 Release Name/Tag: ${release.name || release.tag_name}
 Release Notes:
 ${release.body || 'No release notes provided.'}
@@ -39641,6 +39644,7 @@ Task:
 2. Determine if this specific release should be "worry free" (true/false).
 3. Assign a risk level for this specific release: None, Low, Medium, or High.
 4. If risk is Low, Medium, or High, provide concise recommendations or required changes. If risk is None, this can be an empty string.
+5. If Additional Context/Instructions were provided, ensure the summary and recommendations take them into account.
 
 Respond ONLY in JSON format:
 {
@@ -39676,7 +39680,7 @@ Respond ONLY in JSON format:
             };
         }
     }
-    async analyzeRisks(appName, currentVersion, releases, model, maxReleases) {
+    async analyzeRisks(appName, currentVersion, releases, model, maxReleases, description) {
         if (!this.openai || releases.length === 0)
             return null;
         const cur = normalizeVersion(currentVersion);
@@ -39692,7 +39696,7 @@ Respond ONLY in JSON format:
         if (relevantReleases.length === 0)
             return null;
         log(`🤖 Starting individual analysis for ${relevantReleases.length} releases...`);
-        const assessments = await Promise.all(relevantReleases.map((r) => this.analyzeRelease(appName, r, model)));
+        const assessments = await Promise.all(relevantReleases.map((r) => this.analyzeRelease(appName, r, model, description)));
         const riskLevels = [
             'None',
             'Low',
@@ -43616,15 +43620,138 @@ function setYamlValue(file, path, newValue, type, dryRun) {
     }
     fs.writeFileSync(file, newContent);
 }
+function removeApplicationFromConfig(configFile, repo, dryRun) {
+    if (!fs.existsSync(configFile)) {
+        throw new Error(`Config file not found: ${configFile}`);
+    }
+    const content = fs.readFileSync(configFile, 'utf8');
+    log(`🗑️  Removing application with repo "${repo}" from ${configFile}`, dryRun);
+    if (dryRun)
+        return;
+    const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lines = content.split('\n');
+    let startIndex = -1;
+    let endIndex = -1;
+    let indent = '';
+    // 1. Find the line that has the repo
+    let repoLineIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^\\s*repo:\\s+['"]?${escapedRepo}['"]?\\s*$`))) {
+            repoLineIndex = i;
+            break;
+        }
+    }
+    if (repoLineIndex === -1) {
+        log(`⚠️  Could not find application with repo "${repo}" in ${configFile}`);
+        return;
+    }
+    // 2. Search upwards from repo line to find the start of the list item (starts with -)
+    for (let i = repoLineIndex; i >= 0; i--) {
+        const match = lines[i].match(/^(\s*)-\s+/);
+        if (match) {
+            startIndex = i;
+            indent = match[1];
+            break;
+        }
+    }
+    if (startIndex === -1) {
+        log(`⚠️  Could not find start of application block for repo "${repo}" in ${configFile}`);
+        return;
+    }
+    // 3. Search downwards from startIndex to find the next list item at the same indentation
+    for (let i = startIndex + 1; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^${indent}-\\s+`))) {
+            endIndex = i;
+            break;
+        }
+        // Or if we find a line that is less indented than our app block (and not empty)
+        const lineIndentMatch = lines[i].match(/^(\s*)\S/);
+        if (lineIndentMatch && lineIndentMatch[1].length < indent.length) {
+            endIndex = i;
+            break;
+        }
+    }
+    if (endIndex === -1)
+        endIndex = lines.length;
+    lines.splice(startIndex, endIndex - startIndex);
+    const newContent = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+    fs.writeFileSync(configFile, newContent);
+}
+function updateConfigVersion(configFile, repo, newVersion, dryRun) {
+    if (!fs.existsSync(configFile)) {
+        throw new Error(`Config file not found: ${configFile}`);
+    }
+    const content = fs.readFileSync(configFile, 'utf8');
+    log(`✍️  Updating version for repo "${repo}" in ${configFile} to ${newVersion}`, dryRun);
+    if (dryRun)
+        return;
+    const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lines = content.split('\n');
+    let appStartIndex = -1;
+    let nextAppStartIndex = -1;
+    let indent = '';
+    // 1. Find the repo line
+    let repoLineIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^\\s*repo:\\s+['"]?${escapedRepo}['"]?\\s*$`))) {
+            repoLineIndex = i;
+            break;
+        }
+    }
+    if (repoLineIndex === -1) {
+        throw new Error(`Could not find application with repo "${repo}" in ${configFile}`);
+    }
+    // 2. Find start of block
+    for (let i = repoLineIndex; i >= 0; i--) {
+        const match = lines[i].match(/^(\s*)-\s+/);
+        if (match) {
+            appStartIndex = i;
+            indent = match[1];
+            break;
+        }
+    }
+    // 3. Find end of block
+    for (let i = appStartIndex + 1; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^${indent}-\\s+`))) {
+            nextAppStartIndex = i;
+            break;
+        }
+        const lineIndentMatch = lines[i].match(/^(\s*)\S/);
+        if (lineIndentMatch && lineIndentMatch[1].length < indent.length) {
+            nextAppStartIndex = i;
+            break;
+        }
+    }
+    const searchEndIndex = nextAppStartIndex !== -1 ? nextAppStartIndex : lines.length;
+    let versionIndex = -1;
+    for (let i = appStartIndex; i < searchEndIndex; i++) {
+        if (lines[i].match(/^\s*version:/)) {
+            versionIndex = i;
+            break;
+        }
+    }
+    if (versionIndex !== -1) {
+        lines[versionIndex] = lines[versionIndex].replace(/^((\s*)version:\s*)(.*)$/, `$1${newVersion}`);
+    }
+    else {
+        // Add version field - find indentation of repo line
+        const repoIndent = lines[repoLineIndex].match(/^(\s*)/)[1];
+        lines.splice(repoLineIndex + 1, 0, `${repoIndent}version: ${newVersion}`);
+    }
+    fs.writeFileSync(configFile, lines.join('\n'));
+}
 
 async function run() {
     try {
         const maxReleasesInput = coreExports.getInput('max_releases');
+        const targetsInput = coreExports.getInput('targets');
         const config = {
             repo: coreExports.getInput('repo', { required: true }),
             type: coreExports.getInput('type'),
             source: coreExports.getInput('source'),
-            targets: JSON.parse(coreExports.getInput('targets', { required: true })),
+            targets: targetsInput ? JSON.parse(targetsInput) : [],
+            version: coreExports.getInput('version'),
+            description: coreExports.getInput('description'),
             releaseFilter: coreExports.getInput('release_filter'),
             openaiConfig: {
                 baseURL: coreExports.getInput('openai_base_url'),
@@ -43650,17 +43777,67 @@ async function run() {
         log(`🪄 Processing application "${displayName}"`);
         let latestRelease;
         let releases = [];
+        let currentVerRaw = '';
+        if (config.type === 'manual') {
+            currentVerRaw = config.version || '';
+        }
+        else {
+            try {
+                const firstTarget = config.targets[0];
+                if (!firstTarget)
+                    throw new Error('No targets defined for application');
+                currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || '';
+                if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
+                    currentVerRaw = currentVerRaw.split(':')[1];
+                }
+            }
+            catch (e) {
+                if (e instanceof Error &&
+                    (e.message.includes('File not found') || e.message.includes('ENOENT'))) {
+                    log(`⚠️ Target file not found for "${displayName}".`);
+                    const configFile = 'versions-config.yaml';
+                    if (fs.existsSync(configFile)) {
+                        log(`🗑️ Application with repo "${config.repo}" seems to be deleted. Removing from config...`);
+                        const branchName = `bot/remove-${repoName || config.repo}`.replace(/\//g, '-');
+                        const prTitle = `chore: remove deleted application ${displayName}`;
+                        if (config.dryRun) {
+                            log(`💻 git checkout -B ${branchName}`);
+                            removeApplicationFromConfig(configFile, config.repo, true);
+                            log(`💻 git add ${configFile}`);
+                            log(`💻 git commit -m "${prTitle}"`);
+                            log(`💻 git push origin ${branchName} --force`);
+                        }
+                        else {
+                            await execExports.exec('git', [
+                                'config',
+                                'user.name',
+                                config.gitUserName
+                            ]);
+                            await execExports.exec('git', [
+                                'config',
+                                'user.email',
+                                config.gitUserEmail
+                            ]);
+                            await execExports.exec('git', ['checkout', '-B', branchName]);
+                            removeApplicationFromConfig(configFile, config.repo, false);
+                            await execExports.exec('git', ['add', configFile]);
+                            await execExports.exec('git', ['commit', '-m', prTitle]);
+                            await execExports.exec('git', ['push', 'origin', branchName, '--force']);
+                            const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
+                            await ghService.createOrUpdatePullRequest(contextOwner, contextRepo, prTitle, branchName, 'main', `The application **${displayName}** was tracked in the configuration but its target files are missing. This PR removes it from the tracking configuration.`, [{ name: 'cleanup', color: 'cccccc' }]);
+                        }
+                        return;
+                    }
+                }
+                throw e;
+            }
+        }
         if (config.source === 'dockerhub') {
             latestRelease = await dhService.fetchLatestTag(config.repo);
         }
         else {
             if (!owner || !repoName)
                 throw new Error(`Invalid repo format for GitHub source: ${config.repo}`);
-            const firstTarget = config.targets[0];
-            let currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || '';
-            if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
-                currentVerRaw = currentVerRaw.split(':')[1];
-            }
             releases = await ghService.fetchAllReleases(owner, repoName, currentVerRaw, config.maxReleases);
             if (config.releaseFilter) {
                 const filtered = releases.find((r) => r.tag_name.includes(config.releaseFilter) ||
@@ -43679,23 +43856,41 @@ async function run() {
         }
         const latestVerNormalized = normalizeVersion(latestRelease.tag_name);
         const updatesNeeded = [];
-        let currentVersionFrom = '';
-        for (const target of config.targets) {
-            let currentVerRaw = getYamlValue(target.file, target.path) || '';
-            if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
-                currentVerRaw = currentVerRaw.split(':')[1];
-            }
-            if (!currentVersionFrom) {
-                currentVersionFrom = normalizeVersion(currentVerRaw);
-            }
-            const currentVerNormalized = normalizeVersion(currentVerRaw);
+        const currentVersionFrom = normalizeVersion(currentVerRaw);
+        if (config.type === 'manual') {
             if (latestVerNormalized &&
-                currentVerNormalized &&
-                latestVerNormalized !== currentVerNormalized) {
+                currentVersionFrom &&
+                latestVerNormalized !== currentVersionFrom) {
                 const targetVersion = currentVerRaw.startsWith('v') && !latestVerNormalized.startsWith('v')
                     ? `v${latestVerNormalized}`
                     : latestVerNormalized;
-                updatesNeeded.push({ target, currentVerRaw, targetVersion });
+                updatesNeeded.push({
+                    currentVerRaw,
+                    targetVersion,
+                    isManual: true
+                });
+            }
+        }
+        else {
+            for (const target of config.targets) {
+                let tCurrentVerRaw = getYamlValue(target.file, target.path) || '';
+                if (config.type === 'kubernetes' && tCurrentVerRaw.includes(':')) {
+                    tCurrentVerRaw = tCurrentVerRaw.split(':')[1];
+                }
+                const tCurrentVerNormalized = normalizeVersion(tCurrentVerRaw);
+                if (latestVerNormalized &&
+                    tCurrentVerNormalized &&
+                    latestVerNormalized !== tCurrentVerNormalized) {
+                    const targetVersion = tCurrentVerRaw.startsWith('v') &&
+                        !latestVerNormalized.startsWith('v')
+                        ? `v${latestVerNormalized}`
+                        : latestVerNormalized;
+                    updatesNeeded.push({
+                        target,
+                        currentVerRaw: tCurrentVerRaw,
+                        targetVersion
+                    });
+                }
             }
         }
         if (updatesNeeded.length === 0) {
@@ -43709,7 +43904,7 @@ async function run() {
         const relevantReleases = getRelevantReleases(sourceReleases, currentVerRawForReleases, config.maxReleases);
         let aiAssessment = null;
         if (config.openaiConfig?.apiKey && relevantReleases.length > 0) {
-            aiAssessment = await aiService.analyzeRisks(displayName, currentVerRawForReleases, relevantReleases, config.openaiConfig.model, config.maxReleases);
+            aiAssessment = await aiService.analyzeRisks(displayName, currentVerRawForReleases, relevantReleases, config.openaiConfig.model, config.maxReleases, config.description);
         }
         else if (relevantReleases.length > 0) {
             log('⚠️ AI analysis skipped: OPENAI_API_KEY is not configured.');
@@ -43736,16 +43931,23 @@ async function run() {
                 log(`   - ${rel.tag_name} (${dateStr})`);
             }
         }
-        const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(/\//g, '-');
+        const branchName = `bot/update-${repoName || config.repo}-${latestVerNormalized}`.replace(/\//g, '-');
         const prTitle = `chore: update ${displayName} from ${currentVersionFrom} to ${latestVerNormalized}`;
         if (config.dryRun) {
             log(`💻 git config user.name "${config.gitUserName}"`);
             log(`💻 git config user.email "${config.gitUserEmail}"`);
             log(`💻 git checkout -B ${branchName}`);
             for (const update of updatesNeeded) {
-                log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
-                setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, true);
-                log(`💻 git add ${update.target.file}`);
+                if (update.isManual) {
+                    log(`   - versions-config.yaml -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                    updateConfigVersion('versions-config.yaml', config.repo, update.targetVersion, true);
+                    log(`💻 git add versions-config.yaml`);
+                }
+                else if (update.target) {
+                    log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                    setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, true);
+                    log(`💻 git add ${update.target.file}`);
+                }
             }
             log(`💻 git commit -m "${prTitle}"`);
             log(`💻 git push origin ${branchName} --force`);
@@ -43759,9 +43961,16 @@ async function run() {
         await execExports.exec('git', ['config', 'user.email', config.gitUserEmail]);
         await execExports.exec('git', ['checkout', '-B', branchName]);
         for (const update of updatesNeeded) {
-            log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
-            setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, false);
-            await execExports.exec('git', ['add', update.target.file]);
+            if (update.isManual) {
+                log(`   - versions-config.yaml -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                updateConfigVersion('versions-config.yaml', config.repo, update.targetVersion, false);
+                await execExports.exec('git', ['add', 'versions-config.yaml']);
+            }
+            else if (update.target) {
+                log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, false);
+                await execExports.exec('git', ['add', update.target.file]);
+            }
         }
         await execExports.exec('git', ['commit', '-m', prTitle]);
         await execExports.exec('git', ['push', 'origin', branchName, '--force']);

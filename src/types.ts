@@ -5,9 +5,11 @@ export interface Target {
 
 export interface AppConfig {
   repo: string
-  type: 'kubernetes' | 'helm'
+  type: 'kubernetes' | 'helm' | 'manual'
   source: 'github' | 'dockerhub'
   targets: Target[]
+  version?: string
+  description?: string
   releaseFilter?: string
   openaiConfig?: {
     baseURL?: string
