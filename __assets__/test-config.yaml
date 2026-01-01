@@ -3,4 +3,3 @@ applications:
     type: 'manual'
     version: 'v2.12.6'
     description: 'Manual upgrade context...'
-
