@@ -15,12 +15,14 @@ export interface AppConfig {
     baseURL?: string
     model?: string
     apiKey?: string
+    maxNoteLength?: number
   }
   maxReleases: number
   dryRun: boolean
   githubToken: string
   gitUserName: string
   gitUserEmail: string
+  configFile: string
 }
 
 export interface Release {

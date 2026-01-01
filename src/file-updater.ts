@@ -77,15 +77,15 @@ export function removeApplicationFromConfig(
   repo: string,
   dryRun: boolean
 ): void {
+  log(`🗑️  Removing application with repo "${repo}" from ${configFile}`, dryRun)
+
+  if (dryRun) return
+
   if (!fs.existsSync(configFile)) {
     throw new Error(`Config file not found: ${configFile}`)
   }
 
   const content = fs.readFileSync(configFile, 'utf8')
-  log(`🗑️  Removing application with repo "${repo}" from ${configFile}`, dryRun)
-
-  if (dryRun) return
-
   const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const lines = content.split('\n')
   let startIndex = -1
@@ -152,11 +152,6 @@ export function updateConfigVersion(
   newVersion: string,
   dryRun: boolean
 ): void {
-  if (!fs.existsSync(configFile)) {
-    throw new Error(`Config file not found: ${configFile}`)
-  }
-
-  const content = fs.readFileSync(configFile, 'utf8')
   log(
     `✍️  Updating version for repo "${repo}" in ${configFile} to ${newVersion}`,
     dryRun
@@ -164,6 +159,11 @@ export function updateConfigVersion(
 
   if (dryRun) return
 
+  if (!fs.existsSync(configFile)) {
+    throw new Error(`Config file not found: ${configFile}`)
+  }
+
+  const content = fs.readFileSync(configFile, 'utf8')
   const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const lines = content.split('\n')
   let appStartIndex = -1

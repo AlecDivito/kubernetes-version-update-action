@@ -135,4 +135,18 @@ applications:
       expect(updated).toContain('version: 1.1.0')
     })
   })
+
+  describe('dry run behavior', () => {
+    it('does not throw error if file missing in dry run (remove)', () => {
+      expect(() =>
+        removeApplicationFromConfig('missing.yaml', 'some-repo', true)
+      ).not.toThrow()
+    })
+
+    it('does not throw error if file missing in dry run (update)', () => {
+      expect(() =>
+        updateConfigVersion('missing.yaml', 'some-repo', '1.1.0', true)
+      ).not.toThrow()
+    })
+  })
 })

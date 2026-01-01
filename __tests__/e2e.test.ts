@@ -86,6 +86,8 @@ describe('End-to-End Version Update Action', () => {
           return 'false'
         case 'openai_api_key':
           return 'fake-key'
+        case 'openai_max_note_length':
+          return '15000'
         case 'openai_model':
           return 'gpt-4'
         case 'openai_base_url':
@@ -94,6 +96,8 @@ describe('End-to-End Version Update Action', () => {
           return 'github-actions[bot]'
         case 'git_user_email':
           return 'github-actions[bot]@users.noreply.github.com'
+        case 'config_file':
+          return 'versions-config.yaml'
         default:
           return ''
       }
@@ -288,6 +292,8 @@ describe('End-to-End Version Update Action', () => {
           return 'github-actions[bot]'
         case 'git_user_email':
           return 'github-actions[bot]@users.noreply.github.com'
+        case 'config_file':
+          return 'versions-config.yaml'
         default:
           return ''
       }

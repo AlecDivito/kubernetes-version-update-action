@@ -75,6 +75,8 @@ jobs:
           openai_base_url: ${{ secrets.OPENAI_BASE_URL }}
           openai_model: ${{ secrets.OPENAI_MODEL }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          openai_max_note_length: ${{ matrix.openai_max_note_length || 15000 }}
+          config_file: 'versions-config.yaml'
 ```
 
 ### Configuration (`versions-config.yaml`)
@@ -104,23 +106,25 @@ applications:
 
 ## Inputs
 
-| Name              | Description                                                                           | Required | Default                                        |
-| ----------------- | ------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
-| `github_token`    | GitHub token for API requests and Git operations.                                     | Yes      | `${{ github.token }}`                          |
-| `repo`            | Repository where the application source or image is located (e.g., owner/repository). | Yes      | -                                              |
-| `type`            | Type of update (`kubernetes`, `helm`, or `manual`).                                   | Yes      | `kubernetes`                                   |
-| `source`          | Source of version information (`github` or `dockerhub`).                              | Yes      | `github`                                       |
-| `targets`         | JSON array of target files and paths to update (Optional for `manual`).               | No       | -                                              |
-| `version`         | Current version of the application (Required for `manual`).                           | No       | -                                              |
-| `description`     | AI context/instructions for the application upgrade process.                          | No       | -                                              |
-| `release_filter`  | Optional filter for releases.                                                         | No       | -                                              |
-| `openai_base_url` | Base URL for OpenAI API.                                                              | No       | -                                              |
-| `openai_model`    | Model name for OpenAI API.                                                            | No       | -                                              |
-| `openai_api_key`  | API key for OpenAI.                                                                   | No       | -                                              |
-| `max_releases`    | Maximum number of releases to analyze.                                                | No       | `Infinity`                                     |
-| `dry_run`         | If `true`, only log changes and do not perform Git operations or PR creation.         | No       | `false`                                        |
-| `git_user_name`   | Name of the Git user for commits.                                                     | No       | `github-actions[bot]`                          |
-| `git_user_email`  | Email of the Git user for commits.                                                    | No       | `github-actions[bot]@users.noreply.github.com` |
+| Name                     | Description                                                                           | Required | Default                                        |
+| ------------------------ | ------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
+| `github_token`           | GitHub token for API requests and Git operations.                                     | Yes      | `${{ github.token }}`                          |
+| `repo`                   | Repository where the application source or image is located (e.g., owner/repository). | Yes      | -                                              |
+| `type`                   | Type of update (`kubernetes`, `helm`, or `manual`).                                   | Yes      | `kubernetes`                                   |
+| `source`                 | Source of version information (`github` or `dockerhub`).                              | Yes      | `github`                                       |
+| `targets`                | JSON array of target files and paths to update (Optional for `manual`).               | No       | -                                              |
+| `version`                | Current version of the application (Required for `manual`).                           | No       | -                                              |
+| `description`            | AI context/instructions for the application upgrade process.                          | No       | -                                              |
+| `release_filter`         | Optional filter for releases.                                                         | No       | -                                              |
+| `openai_base_url`        | Base URL for OpenAI API.                                                              | No       | -                                              |
+| `openai_model`           | Model name for OpenAI API.                                                            | No       | -                                              |
+| `openai_api_key`         | API key for OpenAI.                                                                   | No       | -                                              |
+| `openai_max_note_length` | Maximum length of release notes before chunking for AI analysis.                      | No       | `15000`                                        |
+| `max_releases`           | Maximum number of releases to analyze.                                                | No       | `Infinity`                                     |
+| `dry_run`                | If `true`, only log changes and do not perform Git operations or PR creation.         | No       | `false`                                        |
+| `git_user_name`          | Name of the Git user for commits.                                                     | No       | `github-actions[bot]`                          |
+| `git_user_email`         | Email of the Git user for commits.                                                    | No       | `github-actions[bot]@users.noreply.github.com` |
+| `config_file`            | Path to the configuration file (e.g., `versions-config.yaml`).                        | No       | `versions-config.yaml`                         |
 
 ## Local Development & Testing
 

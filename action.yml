@@ -56,6 +56,11 @@ inputs:
     description: API key for OpenAI.
     required: false
     type: string
+  openai_max_note_length:
+    description:
+      Maximum length of release notes before chunking for AI analysis.
+    required: false
+    default: '15000'
   max_releases:
     description: Maximum number of releases to analyze.
     required: false
@@ -74,6 +79,10 @@ inputs:
     description: Email of the git user for commits.
     required: false
     default: 'github-actions[bot]@users.noreply.github.com'
+  config_file:
+    description: Path to the configuration file.
+    required: false
+    default: 'versions-config.yaml'
 
 runs:
   using: node24

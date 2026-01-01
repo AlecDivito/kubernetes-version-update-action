@@ -33,7 +33,10 @@ export async function run(): Promise<void> {
       openaiConfig: {
         baseURL: core.getInput('openai_base_url'),
         model: core.getInput('openai_model'),
-        apiKey: core.getInput('openai_api_key')
+        apiKey: core.getInput('openai_api_key'),
+        maxNoteLength: parseInt(
+          core.getInput('openai_max_note_length') || '15000'
+        )
       },
       maxReleases:
         maxReleasesInput === 'Infinity' || !maxReleasesInput
@@ -42,7 +45,8 @@ export async function run(): Promise<void> {
       dryRun: core.getInput('dry_run') === 'true',
       githubToken: core.getInput('github_token', { required: true }),
       gitUserName: core.getInput('git_user_name'),
-      gitUserEmail: core.getInput('git_user_email')
+      gitUserEmail: core.getInput('git_user_email'),
+      configFile: core.getInput('config_file') || 'versions-config.yaml'
     }
 
     setGlobalDryRun(config.dryRun)
@@ -79,8 +83,7 @@ export async function run(): Promise<void> {
           (e.message.includes('File not found') || e.message.includes('ENOENT'))
         ) {
           log(`⚠️ Target file not found for "${displayName}".`)
-          const configFile = 'versions-config.yaml'
-          if (fs.existsSync(configFile)) {
+          if (fs.existsSync(config.configFile)) {
             log(
               `🗑️ Application with repo "${config.repo}" seems to be deleted. Removing from config...`
             )
@@ -92,8 +95,8 @@ export async function run(): Promise<void> {
 
             if (config.dryRun) {
               log(`💻 git checkout -B ${branchName}`)
-              removeApplicationFromConfig(configFile, config.repo, true)
-              log(`💻 git add ${configFile}`)
+              removeApplicationFromConfig(config.configFile, config.repo, true)
+              log(`💻 git add ${config.configFile}`)
               log(`💻 git commit -m "${prTitle}"`)
               log(`💻 git push origin ${branchName} --force`)
             } else {
@@ -108,8 +111,8 @@ export async function run(): Promise<void> {
                 config.gitUserEmail
               ])
               await exec.exec('git', ['checkout', '-B', branchName])
-              removeApplicationFromConfig(configFile, config.repo, false)
-              await exec.exec('git', ['add', configFile])
+              removeApplicationFromConfig(config.configFile, config.repo, false)
+              await exec.exec('git', ['add', config.configFile])
               await exec.exec('git', ['commit', '-m', prTitle])
               await exec.exec('git', ['push', 'origin', branchName, '--force'])
 
@@ -126,6 +129,8 @@ export async function run(): Promise<void> {
               )
             }
             return
+          } else {
+            log(`⚠️ ${config.configFile} not found. Skipping auto-removal.`)
           }
         }
         throw e
@@ -249,7 +254,8 @@ export async function run(): Promise<void> {
         relevantReleases,
         config.openaiConfig.model!,
         config.maxReleases,
-        config.description
+        config.description,
+        config.openaiConfig.maxNoteLength
       )
     } else if (relevantReleases.length > 0) {
       log('⚠️ AI analysis skipped: OPENAI_API_KEY is not configured.')
@@ -299,15 +305,15 @@ export async function run(): Promise<void> {
       for (const update of updatesNeeded) {
         if (update.isManual) {
           log(
-            `   - versions-config.yaml -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`
+            `   - ${config.configFile} -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`
           )
           updateConfigVersion(
-            'versions-config.yaml',
+            config.configFile,
             config.repo,
             update.targetVersion,
             true
           )
-          log(`💻 git add versions-config.yaml`)
+          log(`💻 git add ${config.configFile}`)
         } else if (update.target) {
           log(
             `   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`
@@ -338,15 +344,15 @@ export async function run(): Promise<void> {
     for (const update of updatesNeeded) {
       if (update.isManual) {
         log(
-          `   - versions-config.yaml -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`
+          `   - ${config.configFile} -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`
         )
         updateConfigVersion(
-          'versions-config.yaml',
+          config.configFile,
           config.repo,
           update.targetVersion,
           false
         )
-        await exec.exec('git', ['add', 'versions-config.yaml'])
+        await exec.exec('git', ['add', config.configFile])
       } else if (update.target) {
         log(
           `   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`
