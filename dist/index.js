@@ -39620,7 +39620,7 @@ class OpenAIService {
             });
         }
     }
-    async analyzeRelease(appName, release, model) {
+    async analyzeRelease(appName, release, model, description, maxNoteLength = 15000) {
         if (!this.openai) {
             return {
                 tag_name: release.tag_name,
@@ -39631,16 +39631,22 @@ class OpenAIService {
                 risk: 'High'
             };
         }
-        const prompt = `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".
+        const descriptionContext = description
+            ? `\nAdditional Context/Instructions for this application:\n${description}\n`
+            : '';
+        const releaseNotes = release.body || 'No release notes provided.';
+        const MAX_NOTE_LENGTH = maxNoteLength;
+        const getPrompt = (notes) => `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".${descriptionContext}
 Release Name/Tag: ${release.name || release.tag_name}
 Release Notes:
-${release.body || 'No release notes provided.'}
+${notes}
 
 Task:
 1. Provide a very short summary of the most important changes in this specific release.
 2. Determine if this specific release should be "worry free" (true/false).
 3. Assign a risk level for this specific release: None, Low, Medium, or High.
 4. If risk is Low, Medium, or High, provide concise recommendations or required changes. If risk is None, this can be an empty string.
+5. If Additional Context/Instructions were provided, ensure the summary and recommendations take them into account.
 
 Respond ONLY in JSON format:
 {
@@ -39651,17 +39657,78 @@ Respond ONLY in JSON format:
 }`;
         try {
             log(`🤖 Analyzing release ${release.tag_name} for ${appName}...`);
-            const response = await this.openai.chat.completions.create({
+            if (releaseNotes.length <= MAX_NOTE_LENGTH) {
+                const response = await this.openai.chat.completions.create({
+                    model: model,
+                    messages: [{ role: 'user', content: getPrompt(releaseNotes) }],
+                    response_format: { type: 'json_object' }
+                });
+                const assessment = JSON.parse(response.choices[0].message.content || '{}');
+                return {
+                    tag_name: release.tag_name,
+                    html_url: release.html_url,
+                    published_at: release.published_at,
+                    ...assessment
+                };
+            }
+            // Handle long release notes by chunking
+            log(`⚠️ Release notes for ${release.tag_name} are too long (${releaseNotes.length} chars). Chunking...`);
+            const chunks = [];
+            for (let i = 0; i < releaseNotes.length; i += MAX_NOTE_LENGTH) {
+                chunks.push(releaseNotes.slice(i, i + MAX_NOTE_LENGTH));
+            }
+            const chunkAssessments = [];
+            for (let i = 0; i < chunks.length; i++) {
+                log(`   - Processing chunk ${i + 1}/${chunks.length}...`);
+                const response = await this.openai.chat.completions.create({
+                    model: model,
+                    messages: [
+                        {
+                            role: 'user',
+                            content: getPrompt(`PART ${i + 1} of ${chunks.length}:\n${chunks[i]}`)
+                        }
+                    ],
+                    response_format: { type: 'json_object' }
+                });
+                chunkAssessments.push(JSON.parse(response.choices[0].message.content || '{}'));
+            }
+            // Aggregate chunk results
+            log(`🤖 Aggregating ${chunks.length} chunk assessments...`);
+            const aggregatePrompt = `I have analyzed a very large release notes document for "${appName}" in ${chunks.length} parts.
+Here are the summaries and risk assessments for each part:
+
+${chunkAssessments
+                .map((a, i) => `Part ${i + 1}:
+Summary: ${a.summary}
+Risk: ${a.risk}
+Recommendations: ${a.recommendations || 'None'}`)
+                .join('\n\n')}
+
+Task:
+Synthesize these assessments into a single coherent overall assessment for the ENTIRE release.
+1. Summary: A single concise summary of the most critical changes.
+2. WorryFree: True only if ALL parts were worry-free.
+3. Risk: The highest risk level found in any part (None < Low < Medium < High).
+4. Recommendations: A synthesized list of all unique and critical recommendations.
+
+Respond ONLY in JSON format:
+{
+  "summary": "string",
+  "worryFree": boolean,
+  "risk": "None" | "Low" | "Medium" | "High",
+  "recommendations": "string"
+}`;
+            const finalResponse = await this.openai.chat.completions.create({
                 model: model,
-                messages: [{ role: 'user', content: prompt }],
+                messages: [{ role: 'user', content: aggregatePrompt }],
                 response_format: { type: 'json_object' }
             });
-            const assessment = JSON.parse(response.choices[0].message.content || '{}');
+            const finalAssessment = JSON.parse(finalResponse.choices[0].message.content || '{}');
             return {
                 tag_name: release.tag_name,
                 html_url: release.html_url,
                 published_at: release.published_at,
-                ...assessment
+                ...finalAssessment
             };
         }
         catch (e) {
@@ -39676,7 +39743,7 @@ Respond ONLY in JSON format:
             };
         }
     }
-    async analyzeRisks(appName, currentVersion, releases, model, maxReleases) {
+    async analyzeRisks(appName, currentVersion, releases, model, maxReleases, description, maxNoteLength = 15000) {
         if (!this.openai || releases.length === 0)
             return null;
         const cur = normalizeVersion(currentVersion);
@@ -39692,7 +39759,7 @@ Respond ONLY in JSON format:
         if (relevantReleases.length === 0)
             return null;
         log(`🤖 Starting individual analysis for ${relevantReleases.length} releases...`);
-        const assessments = await Promise.all(relevantReleases.map((r) => this.analyzeRelease(appName, r, model)));
+        const assessments = await Promise.all(relevantReleases.map((r) => this.analyzeRelease(appName, r, model, description, maxNoteLength)));
         const riskLevels = [
             'None',
             'Low',
@@ -43616,20 +43683,144 @@ function setYamlValue(file, path, newValue, type, dryRun) {
     }
     fs.writeFileSync(file, newContent);
 }
+function removeApplicationFromConfig(configFile, repo, dryRun) {
+    log(`🗑️  Removing application with repo "${repo}" from ${configFile}`, dryRun);
+    if (dryRun)
+        return;
+    if (!fs.existsSync(configFile)) {
+        throw new Error(`Config file not found: ${configFile}`);
+    }
+    const content = fs.readFileSync(configFile, 'utf8');
+    const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lines = content.split('\n');
+    let startIndex = -1;
+    let endIndex = -1;
+    let indent = '';
+    // 1. Find the line that has the repo
+    let repoLineIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^\\s*repo:\\s+['"]?${escapedRepo}['"]?\\s*$`))) {
+            repoLineIndex = i;
+            break;
+        }
+    }
+    if (repoLineIndex === -1) {
+        log(`⚠️  Could not find application with repo "${repo}" in ${configFile}`);
+        return;
+    }
+    // 2. Search upwards from repo line to find the start of the list item (starts with -)
+    for (let i = repoLineIndex; i >= 0; i--) {
+        const match = lines[i].match(/^(\s*)-\s+/);
+        if (match) {
+            startIndex = i;
+            indent = match[1];
+            break;
+        }
+    }
+    if (startIndex === -1) {
+        log(`⚠️  Could not find start of application block for repo "${repo}" in ${configFile}`);
+        return;
+    }
+    // 3. Search downwards from startIndex to find the next list item at the same indentation
+    for (let i = startIndex + 1; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^${indent}-\\s+`))) {
+            endIndex = i;
+            break;
+        }
+        // Or if we find a line that is less indented than our app block (and not empty)
+        const lineIndentMatch = lines[i].match(/^(\s*)\S/);
+        if (lineIndentMatch && lineIndentMatch[1].length < indent.length) {
+            endIndex = i;
+            break;
+        }
+    }
+    if (endIndex === -1)
+        endIndex = lines.length;
+    lines.splice(startIndex, endIndex - startIndex);
+    const newContent = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+    fs.writeFileSync(configFile, newContent);
+}
+function updateConfigVersion(configFile, repo, newVersion, dryRun) {
+    log(`✍️  Updating version for repo "${repo}" in ${configFile} to ${newVersion}`, dryRun);
+    if (dryRun)
+        return;
+    if (!fs.existsSync(configFile)) {
+        throw new Error(`Config file not found: ${configFile}`);
+    }
+    const content = fs.readFileSync(configFile, 'utf8');
+    const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lines = content.split('\n');
+    let appStartIndex = -1;
+    let nextAppStartIndex = -1;
+    let indent = '';
+    // 1. Find the repo line
+    let repoLineIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^\\s*repo:\\s+['"]?${escapedRepo}['"]?\\s*$`))) {
+            repoLineIndex = i;
+            break;
+        }
+    }
+    if (repoLineIndex === -1) {
+        throw new Error(`Could not find application with repo "${repo}" in ${configFile}`);
+    }
+    // 2. Find start of block
+    for (let i = repoLineIndex; i >= 0; i--) {
+        const match = lines[i].match(/^(\s*)-\s+/);
+        if (match) {
+            appStartIndex = i;
+            indent = match[1];
+            break;
+        }
+    }
+    // 3. Find end of block
+    for (let i = appStartIndex + 1; i < lines.length; i++) {
+        if (lines[i].match(new RegExp(`^${indent}-\\s+`))) {
+            nextAppStartIndex = i;
+            break;
+        }
+        const lineIndentMatch = lines[i].match(/^(\s*)\S/);
+        if (lineIndentMatch && lineIndentMatch[1].length < indent.length) {
+            nextAppStartIndex = i;
+            break;
+        }
+    }
+    const searchEndIndex = nextAppStartIndex !== -1 ? nextAppStartIndex : lines.length;
+    let versionIndex = -1;
+    for (let i = appStartIndex; i < searchEndIndex; i++) {
+        if (lines[i].match(/^\s*version:/)) {
+            versionIndex = i;
+            break;
+        }
+    }
+    if (versionIndex !== -1) {
+        lines[versionIndex] = lines[versionIndex].replace(/^((\s*)version:\s*)(.*)$/, `$1${newVersion}`);
+    }
+    else {
+        // Add version field - find indentation of repo line
+        const repoIndent = lines[repoLineIndex].match(/^(\s*)/)[1];
+        lines.splice(repoLineIndex + 1, 0, `${repoIndent}version: ${newVersion}`);
+    }
+    fs.writeFileSync(configFile, lines.join('\n'));
+}
 
 async function run() {
     try {
         const maxReleasesInput = coreExports.getInput('max_releases');
+        const targetsInput = coreExports.getInput('targets');
         const config = {
             repo: coreExports.getInput('repo', { required: true }),
             type: coreExports.getInput('type'),
             source: coreExports.getInput('source'),
-            targets: JSON.parse(coreExports.getInput('targets', { required: true })),
+            targets: targetsInput ? JSON.parse(targetsInput) : [],
+            version: coreExports.getInput('version'),
+            description: coreExports.getInput('description'),
             releaseFilter: coreExports.getInput('release_filter'),
             openaiConfig: {
                 baseURL: coreExports.getInput('openai_base_url'),
                 model: coreExports.getInput('openai_model'),
-                apiKey: coreExports.getInput('openai_api_key')
+                apiKey: coreExports.getInput('openai_api_key'),
+                maxNoteLength: parseInt(coreExports.getInput('openai_max_note_length') || '15000')
             },
             maxReleases: maxReleasesInput === 'Infinity' || !maxReleasesInput
                 ? Infinity
@@ -43637,7 +43828,8 @@ async function run() {
             dryRun: coreExports.getInput('dry_run') === 'true',
             githubToken: coreExports.getInput('github_token', { required: true }),
             gitUserName: coreExports.getInput('git_user_name'),
-            gitUserEmail: coreExports.getInput('git_user_email')
+            gitUserEmail: coreExports.getInput('git_user_email'),
+            configFile: coreExports.getInput('config_file') || 'versions-config.yaml'
         };
         setGlobalDryRun(config.dryRun);
         const [owner, repoName] = config.repo.includes('/')
@@ -43650,17 +43842,69 @@ async function run() {
         log(`🪄 Processing application "${displayName}"`);
         let latestRelease;
         let releases = [];
+        let currentVerRaw = '';
+        if (config.type === 'manual') {
+            currentVerRaw = config.version || '';
+        }
+        else {
+            try {
+                const firstTarget = config.targets[0];
+                if (!firstTarget)
+                    throw new Error('No targets defined for application');
+                currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || '';
+                if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
+                    currentVerRaw = currentVerRaw.split(':')[1];
+                }
+            }
+            catch (e) {
+                if (e instanceof Error &&
+                    (e.message.includes('File not found') || e.message.includes('ENOENT'))) {
+                    log(`⚠️ Target file not found for "${displayName}".`);
+                    if (fs.existsSync(config.configFile)) {
+                        log(`🗑️ Application with repo "${config.repo}" seems to be deleted. Removing from config...`);
+                        const branchName = `bot/remove-${repoName || config.repo}`.replace(/\//g, '-');
+                        const prTitle = `chore: remove deleted application ${displayName}`;
+                        if (config.dryRun) {
+                            log(`💻 git checkout -B ${branchName}`);
+                            removeApplicationFromConfig(config.configFile, config.repo, true);
+                            log(`💻 git add ${config.configFile}`);
+                            log(`💻 git commit -m "${prTitle}"`);
+                            log(`💻 git push origin ${branchName} --force`);
+                        }
+                        else {
+                            await execExports.exec('git', [
+                                'config',
+                                'user.name',
+                                config.gitUserName
+                            ]);
+                            await execExports.exec('git', [
+                                'config',
+                                'user.email',
+                                config.gitUserEmail
+                            ]);
+                            await execExports.exec('git', ['checkout', '-B', branchName]);
+                            removeApplicationFromConfig(config.configFile, config.repo, false);
+                            await execExports.exec('git', ['add', config.configFile]);
+                            await execExports.exec('git', ['commit', '-m', prTitle]);
+                            await execExports.exec('git', ['push', 'origin', branchName, '--force']);
+                            const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
+                            await ghService.createOrUpdatePullRequest(contextOwner, contextRepo, prTitle, branchName, 'main', `The application **${displayName}** was tracked in the configuration but its target files are missing. This PR removes it from the tracking configuration.`, [{ name: 'cleanup', color: 'cccccc' }]);
+                        }
+                        return;
+                    }
+                    else {
+                        log(`⚠️ ${config.configFile} not found. Skipping auto-removal.`);
+                    }
+                }
+                throw e;
+            }
+        }
         if (config.source === 'dockerhub') {
             latestRelease = await dhService.fetchLatestTag(config.repo);
         }
         else {
             if (!owner || !repoName)
                 throw new Error(`Invalid repo format for GitHub source: ${config.repo}`);
-            const firstTarget = config.targets[0];
-            let currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || '';
-            if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
-                currentVerRaw = currentVerRaw.split(':')[1];
-            }
             releases = await ghService.fetchAllReleases(owner, repoName, currentVerRaw, config.maxReleases);
             if (config.releaseFilter) {
                 const filtered = releases.find((r) => r.tag_name.includes(config.releaseFilter) ||
@@ -43679,23 +43923,41 @@ async function run() {
         }
         const latestVerNormalized = normalizeVersion(latestRelease.tag_name);
         const updatesNeeded = [];
-        let currentVersionFrom = '';
-        for (const target of config.targets) {
-            let currentVerRaw = getYamlValue(target.file, target.path) || '';
-            if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
-                currentVerRaw = currentVerRaw.split(':')[1];
-            }
-            if (!currentVersionFrom) {
-                currentVersionFrom = normalizeVersion(currentVerRaw);
-            }
-            const currentVerNormalized = normalizeVersion(currentVerRaw);
+        const currentVersionFrom = normalizeVersion(currentVerRaw);
+        if (config.type === 'manual') {
             if (latestVerNormalized &&
-                currentVerNormalized &&
-                latestVerNormalized !== currentVerNormalized) {
+                currentVersionFrom &&
+                latestVerNormalized !== currentVersionFrom) {
                 const targetVersion = currentVerRaw.startsWith('v') && !latestVerNormalized.startsWith('v')
                     ? `v${latestVerNormalized}`
                     : latestVerNormalized;
-                updatesNeeded.push({ target, currentVerRaw, targetVersion });
+                updatesNeeded.push({
+                    currentVerRaw,
+                    targetVersion,
+                    isManual: true
+                });
+            }
+        }
+        else {
+            for (const target of config.targets) {
+                let tCurrentVerRaw = getYamlValue(target.file, target.path) || '';
+                if (config.type === 'kubernetes' && tCurrentVerRaw.includes(':')) {
+                    tCurrentVerRaw = tCurrentVerRaw.split(':')[1];
+                }
+                const tCurrentVerNormalized = normalizeVersion(tCurrentVerRaw);
+                if (latestVerNormalized &&
+                    tCurrentVerNormalized &&
+                    latestVerNormalized !== tCurrentVerNormalized) {
+                    const targetVersion = tCurrentVerRaw.startsWith('v') &&
+                        !latestVerNormalized.startsWith('v')
+                        ? `v${latestVerNormalized}`
+                        : latestVerNormalized;
+                    updatesNeeded.push({
+                        target,
+                        currentVerRaw: tCurrentVerRaw,
+                        targetVersion
+                    });
+                }
             }
         }
         if (updatesNeeded.length === 0) {
@@ -43709,7 +43971,7 @@ async function run() {
         const relevantReleases = getRelevantReleases(sourceReleases, currentVerRawForReleases, config.maxReleases);
         let aiAssessment = null;
         if (config.openaiConfig?.apiKey && relevantReleases.length > 0) {
-            aiAssessment = await aiService.analyzeRisks(displayName, currentVerRawForReleases, relevantReleases, config.openaiConfig.model, config.maxReleases);
+            aiAssessment = await aiService.analyzeRisks(displayName, currentVerRawForReleases, relevantReleases, config.openaiConfig.model, config.maxReleases, config.description, config.openaiConfig.maxNoteLength);
         }
         else if (relevantReleases.length > 0) {
             log('⚠️ AI analysis skipped: OPENAI_API_KEY is not configured.');
@@ -43736,16 +43998,23 @@ async function run() {
                 log(`   - ${rel.tag_name} (${dateStr})`);
             }
         }
-        const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(/\//g, '-');
+        const branchName = `bot/update-${repoName || config.repo}-${latestVerNormalized}`.replace(/\//g, '-');
         const prTitle = `chore: update ${displayName} from ${currentVersionFrom} to ${latestVerNormalized}`;
         if (config.dryRun) {
             log(`💻 git config user.name "${config.gitUserName}"`);
             log(`💻 git config user.email "${config.gitUserEmail}"`);
             log(`💻 git checkout -B ${branchName}`);
             for (const update of updatesNeeded) {
-                log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
-                setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, true);
-                log(`💻 git add ${update.target.file}`);
+                if (update.isManual) {
+                    log(`   - ${config.configFile} -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                    updateConfigVersion(config.configFile, config.repo, update.targetVersion, true);
+                    log(`💻 git add ${config.configFile}`);
+                }
+                else if (update.target) {
+                    log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                    setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, true);
+                    log(`💻 git add ${update.target.file}`);
+                }
             }
             log(`💻 git commit -m "${prTitle}"`);
             log(`💻 git push origin ${branchName} --force`);
@@ -43759,9 +44028,16 @@ async function run() {
         await execExports.exec('git', ['config', 'user.email', config.gitUserEmail]);
         await execExports.exec('git', ['checkout', '-B', branchName]);
         for (const update of updatesNeeded) {
-            log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
-            setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, false);
-            await execExports.exec('git', ['add', update.target.file]);
+            if (update.isManual) {
+                log(`   - ${config.configFile} -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                updateConfigVersion(config.configFile, config.repo, update.targetVersion, false);
+                await execExports.exec('git', ['add', config.configFile]);
+            }
+            else if (update.target) {
+                log(`   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`);
+                setYamlValue(update.target.file, update.target.path, update.targetVersion, config.type, false);
+                await execExports.exec('git', ['add', update.target.file]);
+            }
         }
         await execExports.exec('git', ['commit', '-m', prTitle]);
         await execExports.exec('git', ['push', 'origin', branchName, '--force']);

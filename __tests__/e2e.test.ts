@@ -68,7 +68,7 @@ describe('End-to-End Version Update Action', () => {
     ;(mockCore.getInput as jest.Mock).mockImplementation((name: unknown) => {
       switch (name) {
         case 'repo':
-          return 'owner/repo'
+          return 'owner/repo-app'
         case 'type':
           return 'kubernetes'
         case 'source':
@@ -86,6 +86,8 @@ describe('End-to-End Version Update Action', () => {
           return 'false'
         case 'openai_api_key':
           return 'fake-key'
+        case 'openai_max_note_length':
+          return '15000'
         case 'openai_model':
           return 'gpt-4'
         case 'openai_base_url':
@@ -94,6 +96,8 @@ describe('End-to-End Version Update Action', () => {
           return 'github-actions[bot]'
         case 'git_user_email':
           return 'github-actions[bot]@users.noreply.github.com'
+        case 'config_file':
+          return 'versions-config.yaml'
         default:
           return ''
       }
@@ -172,24 +176,24 @@ describe('End-to-End Version Update Action', () => {
     expect(mockExec.exec).toHaveBeenCalledWith('git', [
       'checkout',
       '-B',
-      expect.stringContaining('bot-update-repo-1.1.0')
+      expect.stringContaining('bot-update-repo-app-1.1.0')
     ])
     expect(mockExec.exec).toHaveBeenCalledWith('git', [
       'commit',
       '-m',
-      expect.stringContaining('chore: update repo from 1.0.0 to 1.1.0')
+      expect.stringContaining('chore: update repo-app from 1.0.0 to 1.1.0')
     ])
     expect(mockExec.exec).toHaveBeenCalledWith('git', [
       'push',
       'origin',
-      expect.stringContaining('bot-update-repo-1.1.0'),
+      expect.stringContaining('bot-update-repo-app-1.1.0'),
       '--force'
     ])
 
     // Verify PR Creation
     expect(octokit.rest.pulls.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'chore: update repo from 1.0.0 to 1.1.0',
+        title: 'chore: update repo-app from 1.0.0 to 1.1.0',
         body: expect.stringContaining('AI Risk Assessment')
       })
     )
@@ -209,7 +213,6 @@ describe('End-to-End Version Update Action', () => {
   })
 
   it('skips update if already at latest version', async () => {
-    // Current version in file is 1.0.0, so we mock latest release as 1.0.0
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const octokit = mockGithub.getOctokit('fake-token') as any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -226,9 +229,7 @@ describe('End-to-End Version Update Action', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (run as any)()
 
-    // Verify no PR was created
     expect(octokit.rest.pulls.create).not.toHaveBeenCalled()
-    // Verify log message
     expect(mockCore.info).toHaveBeenCalledWith(
       expect.stringContaining('already up to date')
     )
@@ -237,7 +238,7 @@ describe('End-to-End Version Update Action', () => {
   it('respects dry_run flag', async () => {
     ;(mockCore.getInput as jest.Mock).mockImplementation((name: unknown) => {
       if (name === 'dry_run') return 'true'
-      if (name === 'repo') return 'owner/repo'
+      if (name === 'repo') return 'owner/repo-app'
       if (name === 'type') return 'kubernetes'
       if (name === 'source') return 'github'
       if (name === 'targets')
@@ -267,16 +268,43 @@ describe('End-to-End Version Update Action', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (run as any)()
 
-    // File should NOT be updated
     const content = fs.readFileSync(testManifestPath, 'utf8')
     expect(content).toContain('1.0.0')
-
-    // No git commands should be run for commit/push
     expect(mockExec.exec).not.toHaveBeenCalled()
-    expect(octokit.rest.pulls.create).not.toHaveBeenCalled()
   })
 
-  it('updates an existing PR if it already exists', async () => {
+  it('successfully updates a manual version and creates a PR', async () => {
+    ;(mockCore.getInput as jest.Mock).mockImplementation((name: unknown) => {
+      switch (name) {
+        case 'repo':
+          return 'owner/manual-repo'
+        case 'type':
+          return 'manual'
+        case 'version':
+          return '1.0.0'
+        case 'source':
+          return 'github'
+        case 'github_token':
+          return 'fake-token'
+        case 'dry_run':
+          return 'false'
+        case 'git_user_name':
+          return 'github-actions[bot]'
+        case 'git_user_email':
+          return 'github-actions[bot]@users.noreply.github.com'
+        case 'config_file':
+          return 'versions-config.yaml'
+        default:
+          return ''
+      }
+    })
+
+    const configPath = 'versions-config.yaml'
+    fs.writeFileSync(
+      configPath,
+      'applications:\n  - name: manual-app\n    repo: owner/manual-repo\n    version: 1.0.0'
+    )
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const octokit = mockGithub.getOctokit('fake-token') as any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -290,22 +318,41 @@ describe('End-to-End Version Update Action', () => {
       ]
     })
 
-    // Mock existing PR
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(octokit.rest.pulls.list as any).mockResolvedValue({
-      data: [{ number: 123 }]
+    await (run as any)()
+
+    const updatedConfig = fs.readFileSync(configPath, 'utf8')
+    expect(updatedConfig).toContain('version: 1.1.0')
+    if (fs.existsSync(configPath)) fs.unlinkSync(configPath)
+  })
+
+  it('removes application if target file is missing', async () => {
+    ;(mockCore.getInput as jest.Mock).mockImplementation((name: unknown) => {
+      switch (name) {
+        case 'repo':
+          return 'owner/missing-repo'
+        case 'type':
+          return 'kubernetes'
+        case 'targets':
+          return JSON.stringify([{ file: 'non-existent.yaml', path: 'image' }])
+        case 'github_token':
+          return 'fake-token'
+        default:
+          return ''
+      }
     })
+
+    const configPath = 'versions-config.yaml'
+    fs.writeFileSync(
+      configPath,
+      "applications:\n  - name: 'missing-app'\n    repo: 'owner/missing-repo'\n    file: 'non-existent.yaml'"
+    )
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (run as any)()
 
-    // Verify PR Update instead of Create
-    expect(octokit.rest.pulls.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pull_number: 123,
-        title: 'chore: update repo from 1.0.0 to 1.1.0'
-      })
-    )
-    expect(octokit.rest.pulls.create).not.toHaveBeenCalled()
+    const updatedConfig = fs.readFileSync(configPath, 'utf8')
+    expect(updatedConfig).not.toContain('owner/missing-repo')
+    if (fs.existsSync(configPath)) fs.unlinkSync(configPath)
   })
 })

@@ -192,7 +192,9 @@ export class OpenAIService {
   async analyzeRelease(
     appName: string,
     release: Release,
-    model: string
+    model: string,
+    description?: string,
+    maxNoteLength = 15000
   ): Promise<RiskAssessment> {
     if (!this.openai) {
       return {
@@ -205,16 +207,26 @@ export class OpenAIService {
       }
     }
 
-    const prompt = `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".
+    const descriptionContext = description
+      ? `\nAdditional Context/Instructions for this application:\n${description}\n`
+      : ''
+
+    const releaseNotes = release.body || 'No release notes provided.'
+    const MAX_NOTE_LENGTH = maxNoteLength
+
+    const getPrompt = (
+      notes: string
+    ) => `You are a DevOps assistant helping to assess the risk of a single release for "${appName}".${descriptionContext}
 Release Name/Tag: ${release.name || release.tag_name}
 Release Notes:
-${release.body || 'No release notes provided.'}
+${notes}
 
 Task:
 1. Provide a very short summary of the most important changes in this specific release.
 2. Determine if this specific release should be "worry free" (true/false).
 3. Assign a risk level for this specific release: None, Low, Medium, or High.
 4. If risk is Low, Medium, or High, provide concise recommendations or required changes. If risk is None, this can be an empty string.
+5. If Additional Context/Instructions were provided, ensure the summary and recommendations take them into account.
 
 Respond ONLY in JSON format:
 {
@@ -226,18 +238,97 @@ Respond ONLY in JSON format:
 
     try {
       log(`🤖 Analyzing release ${release.tag_name} for ${appName}...`)
-      const response = await this.openai.chat.completions.create({
+
+      if (releaseNotes.length <= MAX_NOTE_LENGTH) {
+        const response = await this.openai.chat.completions.create({
+          model: model,
+          messages: [{ role: 'user', content: getPrompt(releaseNotes) }],
+          response_format: { type: 'json_object' }
+        })
+        const assessment = JSON.parse(
+          response.choices[0].message.content || '{}'
+        )
+        return {
+          tag_name: release.tag_name,
+          html_url: release.html_url,
+          published_at: release.published_at,
+          ...assessment
+        }
+      }
+
+      // Handle long release notes by chunking
+      log(
+        `⚠️ Release notes for ${release.tag_name} are too long (${releaseNotes.length} chars). Chunking...`
+      )
+      const chunks: string[] = []
+      for (let i = 0; i < releaseNotes.length; i += MAX_NOTE_LENGTH) {
+        chunks.push(releaseNotes.slice(i, i + MAX_NOTE_LENGTH))
+      }
+
+      const chunkAssessments: RiskAssessment[] = []
+      for (let i = 0; i < chunks.length; i++) {
+        log(`   - Processing chunk ${i + 1}/${chunks.length}...`)
+        const response = await this.openai.chat.completions.create({
+          model: model,
+          messages: [
+            {
+              role: 'user',
+              content: getPrompt(
+                `PART ${i + 1} of ${chunks.length}:\n${chunks[i]}`
+              )
+            }
+          ],
+          response_format: { type: 'json_object' }
+        })
+        chunkAssessments.push(
+          JSON.parse(response.choices[0].message.content || '{}')
+        )
+      }
+
+      // Aggregate chunk results
+      log(`🤖 Aggregating ${chunks.length} chunk assessments...`)
+      const aggregatePrompt = `I have analyzed a very large release notes document for "${appName}" in ${chunks.length} parts.
+Here are the summaries and risk assessments for each part:
+
+${chunkAssessments
+  .map(
+    (a, i) =>
+      `Part ${i + 1}:
+Summary: ${a.summary}
+Risk: ${a.risk}
+Recommendations: ${a.recommendations || 'None'}`
+  )
+  .join('\n\n')}
+
+Task:
+Synthesize these assessments into a single coherent overall assessment for the ENTIRE release.
+1. Summary: A single concise summary of the most critical changes.
+2. WorryFree: True only if ALL parts were worry-free.
+3. Risk: The highest risk level found in any part (None < Low < Medium < High).
+4. Recommendations: A synthesized list of all unique and critical recommendations.
+
+Respond ONLY in JSON format:
+{
+  "summary": "string",
+  "worryFree": boolean,
+  "risk": "None" | "Low" | "Medium" | "High",
+  "recommendations": "string"
+}`
+
+      const finalResponse = await this.openai.chat.completions.create({
         model: model,
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: 'user', content: aggregatePrompt }],
         response_format: { type: 'json_object' }
       })
 
-      const assessment = JSON.parse(response.choices[0].message.content || '{}')
+      const finalAssessment = JSON.parse(
+        finalResponse.choices[0].message.content || '{}'
+      )
       return {
         tag_name: release.tag_name,
         html_url: release.html_url,
         published_at: release.published_at,
-        ...assessment
+        ...finalAssessment
       }
     } catch (e: unknown) {
       log(
@@ -259,7 +350,9 @@ Respond ONLY in JSON format:
     currentVersion: string,
     releases: Release[],
     model: string,
-    maxReleases: number
+    maxReleases: number,
+    description?: string,
+    maxNoteLength = 15000
   ): Promise<AggregateRisk | null> {
     if (!this.openai || releases.length === 0) return null
 
@@ -279,7 +372,9 @@ Respond ONLY in JSON format:
       `🤖 Starting individual analysis for ${relevantReleases.length} releases...`
     )
     const assessments = await Promise.all(
-      relevantReleases.map((r) => this.analyzeRelease(appName, r, model))
+      relevantReleases.map((r) =>
+        this.analyzeRelease(appName, r, model, description, maxNoteLength)
+      )
     )
 
     const riskLevels: ('None' | 'Low' | 'Medium' | 'High')[] = [

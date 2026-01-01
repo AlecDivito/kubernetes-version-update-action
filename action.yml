@@ -19,7 +19,7 @@ inputs:
       owner/repo).
     required: true
   type:
-    description: Type of update (kubernetes or helm).
+    description: Type of update (kubernetes, helm, or manual).
     required: true
     default: kubernetes
   source:
@@ -30,7 +30,15 @@ inputs:
     description:
       'JSON array of target files and paths to update (e.g., ''[{"file":
       "deploy.yaml", "path": "image"}]'').'
-    required: true
+    required: false
+    type: string
+  version:
+    description: The current version of the application (for manual type).
+    required: false
+    type: string
+  description:
+    description: Context about the application for AI analysis.
+    required: false
     type: string
   release_filter:
     description: Optional filter for releases (e.g., a prefix or substring).
@@ -48,6 +56,11 @@ inputs:
     description: API key for OpenAI.
     required: false
     type: string
+  openai_max_note_length:
+    description:
+      Maximum length of release notes before chunking for AI analysis.
+    required: false
+    default: '15000'
   max_releases:
     description: Maximum number of releases to analyze.
     required: false
@@ -66,6 +79,10 @@ inputs:
     description: Email of the git user for commits.
     required: false
     default: 'github-actions[bot]@users.noreply.github.com'
+  config_file:
+    description: Path to the configuration file.
+    required: false
+    default: 'versions-config.yaml'
 
 runs:
   using: node24

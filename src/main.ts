@@ -1,8 +1,14 @@
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
+import fs from 'fs'
 import { AppConfig, Release, Target } from './types.js'
 import { GitHubService, DockerHubService, OpenAIService } from './services.js'
-import { getYamlValue, setYamlValue } from './file-updater.js'
+import {
+  getYamlValue,
+  setYamlValue,
+  removeApplicationFromConfig,
+  updateConfigVersion
+} from './file-updater.js'
 import {
   log,
   normalizeVersion,
@@ -15,16 +21,22 @@ import {
 export async function run(): Promise<void> {
   try {
     const maxReleasesInput = core.getInput('max_releases')
+    const targetsInput = core.getInput('targets')
     const config: AppConfig = {
       repo: core.getInput('repo', { required: true }),
-      type: core.getInput('type') as 'kubernetes' | 'helm',
+      type: core.getInput('type') as 'kubernetes' | 'helm' | 'manual',
       source: core.getInput('source') as 'github' | 'dockerhub',
-      targets: JSON.parse(core.getInput('targets', { required: true })),
+      targets: targetsInput ? JSON.parse(targetsInput) : [],
+      version: core.getInput('version'),
+      description: core.getInput('description'),
       releaseFilter: core.getInput('release_filter'),
       openaiConfig: {
         baseURL: core.getInput('openai_base_url'),
         model: core.getInput('openai_model'),
-        apiKey: core.getInput('openai_api_key')
+        apiKey: core.getInput('openai_api_key'),
+        maxNoteLength: parseInt(
+          core.getInput('openai_max_note_length') || '15000'
+        )
       },
       maxReleases:
         maxReleasesInput === 'Infinity' || !maxReleasesInput
@@ -33,7 +45,8 @@ export async function run(): Promise<void> {
       dryRun: core.getInput('dry_run') === 'true',
       githubToken: core.getInput('github_token', { required: true }),
       gitUserName: core.getInput('git_user_name'),
-      gitUserEmail: core.getInput('git_user_email')
+      gitUserEmail: core.getInput('git_user_email'),
+      configFile: core.getInput('config_file') || 'versions-config.yaml'
     }
 
     setGlobalDryRun(config.dryRun)
@@ -53,16 +66,82 @@ export async function run(): Promise<void> {
     let latestRelease: Release | undefined
     let releases: Release[] = []
 
+    let currentVerRaw = ''
+    if (config.type === 'manual') {
+      currentVerRaw = config.version || ''
+    } else {
+      try {
+        const firstTarget = config.targets[0]
+        if (!firstTarget) throw new Error('No targets defined for application')
+        currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || ''
+        if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
+          currentVerRaw = currentVerRaw.split(':')[1]
+        }
+      } catch (e: unknown) {
+        if (
+          e instanceof Error &&
+          (e.message.includes('File not found') || e.message.includes('ENOENT'))
+        ) {
+          log(`⚠️ Target file not found for "${displayName}".`)
+          if (fs.existsSync(config.configFile)) {
+            log(
+              `🗑️ Application with repo "${config.repo}" seems to be deleted. Removing from config...`
+            )
+            const branchName = `bot/remove-${repoName || config.repo}`.replace(
+              /\//g,
+              '-'
+            )
+            const prTitle = `chore: remove deleted application ${displayName}`
+
+            if (config.dryRun) {
+              log(`💻 git checkout -B ${branchName}`)
+              removeApplicationFromConfig(config.configFile, config.repo, true)
+              log(`💻 git add ${config.configFile}`)
+              log(`💻 git commit -m "${prTitle}"`)
+              log(`💻 git push origin ${branchName} --force`)
+            } else {
+              await exec.exec('git', [
+                'config',
+                'user.name',
+                config.gitUserName
+              ])
+              await exec.exec('git', [
+                'config',
+                'user.email',
+                config.gitUserEmail
+              ])
+              await exec.exec('git', ['checkout', '-B', branchName])
+              removeApplicationFromConfig(config.configFile, config.repo, false)
+              await exec.exec('git', ['add', config.configFile])
+              await exec.exec('git', ['commit', '-m', prTitle])
+              await exec.exec('git', ['push', 'origin', branchName, '--force'])
+
+              const [contextOwner, contextRepo] =
+                process.env.GITHUB_REPOSITORY!.split('/')
+              await ghService.createOrUpdatePullRequest(
+                contextOwner,
+                contextRepo,
+                prTitle,
+                branchName,
+                'main',
+                `The application **${displayName}** was tracked in the configuration but its target files are missing. This PR removes it from the tracking configuration.`,
+                [{ name: 'cleanup', color: 'cccccc' }]
+              )
+            }
+            return
+          } else {
+            log(`⚠️ ${config.configFile} not found. Skipping auto-removal.`)
+          }
+        }
+        throw e
+      }
+    }
+
     if (config.source === 'dockerhub') {
       latestRelease = await dhService.fetchLatestTag(config.repo)
     } else {
       if (!owner || !repoName)
         throw new Error(`Invalid repo format for GitHub source: ${config.repo}`)
-      const firstTarget = config.targets[0]
-      let currentVerRaw = getYamlValue(firstTarget.file, firstTarget.path) || ''
-      if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
-        currentVerRaw = currentVerRaw.split(':')[1]
-      }
 
       releases = await ghService.fetchAllReleases(
         owner,
@@ -94,35 +173,55 @@ export async function run(): Promise<void> {
 
     const latestVerNormalized = normalizeVersion(latestRelease.tag_name)
     const updatesNeeded: {
-      target: Target
+      target?: Target
       currentVerRaw: string
       targetVersion: string
+      isManual?: boolean
     }[] = []
 
-    let currentVersionFrom = ''
+    const currentVersionFrom = normalizeVersion(currentVerRaw)
 
-    for (const target of config.targets) {
-      let currentVerRaw = getYamlValue(target.file, target.path) || ''
-      if (config.type === 'kubernetes' && currentVerRaw.includes(':')) {
-        currentVerRaw = currentVerRaw.split(':')[1]
-      }
-
-      if (!currentVersionFrom) {
-        currentVersionFrom = normalizeVersion(currentVerRaw)
-      }
-
-      const currentVerNormalized = normalizeVersion(currentVerRaw)
+    if (config.type === 'manual') {
       if (
         latestVerNormalized &&
-        currentVerNormalized &&
-        latestVerNormalized !== currentVerNormalized
+        currentVersionFrom &&
+        latestVerNormalized !== currentVersionFrom
       ) {
         const targetVersion =
           currentVerRaw.startsWith('v') && !latestVerNormalized.startsWith('v')
             ? `v${latestVerNormalized}`
             : latestVerNormalized
+        updatesNeeded.push({
+          currentVerRaw,
+          targetVersion,
+          isManual: true
+        })
+      }
+    } else {
+      for (const target of config.targets) {
+        let tCurrentVerRaw = getYamlValue(target.file, target.path) || ''
+        if (config.type === 'kubernetes' && tCurrentVerRaw.includes(':')) {
+          tCurrentVerRaw = tCurrentVerRaw.split(':')[1]
+        }
 
-        updatesNeeded.push({ target, currentVerRaw, targetVersion })
+        const tCurrentVerNormalized = normalizeVersion(tCurrentVerRaw)
+        if (
+          latestVerNormalized &&
+          tCurrentVerNormalized &&
+          latestVerNormalized !== tCurrentVerNormalized
+        ) {
+          const targetVersion =
+            tCurrentVerRaw.startsWith('v') &&
+            !latestVerNormalized.startsWith('v')
+              ? `v${latestVerNormalized}`
+              : latestVerNormalized
+
+          updatesNeeded.push({
+            target,
+            currentVerRaw: tCurrentVerRaw,
+            targetVersion
+          })
+        }
       }
     }
 
@@ -154,7 +253,9 @@ export async function run(): Promise<void> {
         currentVerRawForReleases,
         relevantReleases,
         config.openaiConfig.model!,
-        config.maxReleases
+        config.maxReleases,
+        config.description,
+        config.openaiConfig.maxNoteLength
       )
     } else if (relevantReleases.length > 0) {
       log('⚠️ AI analysis skipped: OPENAI_API_KEY is not configured.')
@@ -189,10 +290,11 @@ export async function run(): Promise<void> {
       }
     }
 
-    const branchName = `bot/update-${repoName}-${latestVerNormalized}`.replace(
-      /\//g,
-      '-'
-    )
+    const branchName =
+      `bot/update-${repoName || config.repo}-${latestVerNormalized}`.replace(
+        /\//g,
+        '-'
+      )
 
     const prTitle = `chore: update ${displayName} from ${currentVersionFrom} to ${latestVerNormalized}`
 
@@ -201,17 +303,30 @@ export async function run(): Promise<void> {
       log(`💻 git config user.email "${config.gitUserEmail}"`)
       log(`💻 git checkout -B ${branchName}`)
       for (const update of updatesNeeded) {
-        log(
-          `   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`
-        )
-        setYamlValue(
-          update.target.file,
-          update.target.path,
-          update.targetVersion,
-          config.type,
-          true
-        )
-        log(`💻 git add ${update.target.file}`)
+        if (update.isManual) {
+          log(
+            `   - ${config.configFile} -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`
+          )
+          updateConfigVersion(
+            config.configFile,
+            config.repo,
+            update.targetVersion,
+            true
+          )
+          log(`💻 git add ${config.configFile}`)
+        } else if (update.target) {
+          log(
+            `   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`
+          )
+          setYamlValue(
+            update.target.file,
+            update.target.path,
+            update.targetVersion,
+            config.type as 'kubernetes' | 'helm',
+            true
+          )
+          log(`💻 git add ${update.target.file}`)
+        }
       }
       log(`💻 git commit -m "${prTitle}"`)
       log(`💻 git push origin ${branchName} --force`)
@@ -227,17 +342,30 @@ export async function run(): Promise<void> {
     await exec.exec('git', ['checkout', '-B', branchName])
 
     for (const update of updatesNeeded) {
-      log(
-        `   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`
-      )
-      setYamlValue(
-        update.target.file,
-        update.target.path,
-        update.targetVersion,
-        config.type,
-        false
-      )
-      await exec.exec('git', ['add', update.target.file])
+      if (update.isManual) {
+        log(
+          `   - ${config.configFile} -> ${displayName}: ${update.currentVerRaw} -> ${update.targetVersion}`
+        )
+        updateConfigVersion(
+          config.configFile,
+          config.repo,
+          update.targetVersion,
+          false
+        )
+        await exec.exec('git', ['add', config.configFile])
+      } else if (update.target) {
+        log(
+          `   - ${update.target.file} -> ${update.target.path}: ${update.currentVerRaw} -> ${update.targetVersion}`
+        )
+        setYamlValue(
+          update.target.file,
+          update.target.path,
+          update.targetVersion,
+          config.type as 'kubernetes' | 'helm',
+          false
+        )
+        await exec.exec('git', ['add', update.target.file])
+      }
     }
 
     await exec.exec('git', ['commit', '-m', prTitle])
