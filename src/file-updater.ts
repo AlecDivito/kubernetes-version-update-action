@@ -96,7 +96,9 @@ export function removeApplicationFromConfig(
   let repoLineIndex = -1
   for (let i = 0; i < lines.length; i++) {
     if (
-      lines[i].match(new RegExp(`^\\s*repo:\\s+['"]?${escapedRepo}['"]?\\s*$`))
+      lines[i].match(
+        new RegExp(`^\\s*(?:-\\s*)?repo:\\s+['"]?${escapedRepo}['"]?\\s*$`)
+      )
     ) {
       repoLineIndex = i
       break
@@ -174,7 +176,9 @@ export function updateConfigVersion(
   let repoLineIndex = -1
   for (let i = 0; i < lines.length; i++) {
     if (
-      lines[i].match(new RegExp(`^\\s*repo:\\s+['"]?${escapedRepo}['"]?\\s*$`))
+      lines[i].match(
+        new RegExp(`^\\s*(?:-\\s*)?repo:\\s+['"]?${escapedRepo}['"]?\\s*$`)
+      )
     ) {
       repoLineIndex = i
       break

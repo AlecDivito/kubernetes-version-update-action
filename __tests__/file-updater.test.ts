@@ -93,6 +93,24 @@ applications:
       expect(updated).not.toContain('traefik/traefik-helm-chart')
       expect(updated).toContain('busybox')
     })
+
+    it('removes an application when repo is the first key in the list item', () => {
+      const content = `
+applications:
+  - repo: 'argoproj/argo-cd'
+    type: 'manual'
+    version: 'v2.12.6'
+  - repo: 'other/repo'
+    version: 'v1.0.0'
+`.trim()
+      fs.writeFileSync(testFile, content)
+
+      removeApplicationFromConfig(testFile, 'argoproj/argo-cd', false)
+
+      const updated = fs.readFileSync(testFile, 'utf8')
+      expect(updated).not.toContain('argoproj/argo-cd')
+      expect(updated).toContain('other/repo')
+    })
   })
 
   describe('updateConfigVersion', () => {
@@ -114,6 +132,21 @@ applications:
 
       const updated = fs.readFileSync(testFile, 'utf8')
       expect(updated).toContain('version: 1.1.0')
+    })
+
+    it('updates when repo is the first key in the list item', () => {
+      const content = `
+applications:
+  - repo: 'argoproj/argo-cd'
+    type: 'manual'
+    version: 'v2.12.6'
+`.trim()
+      fs.writeFileSync(testFile, content)
+
+      updateConfigVersion(testFile, 'argoproj/argo-cd', 'v3.0.21', false)
+
+      const updated = fs.readFileSync(testFile, 'utf8')
+      expect(updated).toContain('version: v3.0.21')
     })
 
     it('adds a version field if missing', () => {
