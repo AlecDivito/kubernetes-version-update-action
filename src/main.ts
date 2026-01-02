@@ -15,7 +15,8 @@ import {
   formatRisk,
   setGlobalDryRun,
   getRelevantReleases,
-  getLogBuffer
+  getLogBuffer,
+  generatePrBody
 } from './utils.js'
 
 export async function run(): Promise<void> {
@@ -372,33 +373,12 @@ export async function run(): Promise<void> {
     await exec.exec('git', ['push', 'origin', branchName, '--force'])
 
     // PR Creation
-    let prBody = `Automated version update for **${displayName}**.\n\n`
-
-    if (aiAssessment) {
-      prBody += `### 🤖 AI Risk Assessment\n`
-      prBody += `- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n`
-      prBody += `- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes ✅' : 'No ⚠️'}\n\n`
-      prBody += `#### Detailed Release Summaries\n`
-      for (const rel of aiAssessment.releases) {
-        const dateStr = rel.published_at
-          ? new Date(rel.published_at).toLocaleDateString()
-          : 'unknown date'
-        prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n  ${rel.summary}\n`
-        if (rel.risk !== 'None' && rel.recommendations) {
-          prBody += `  > **💡 Recommendation:** ${rel.recommendations}\n`
-        }
-      }
-    } else {
-      prBody += `### 📦 Included Releases\n`
-      for (const rel of relevantReleases) {
-        const dateStr = rel.published_at
-          ? new Date(rel.published_at).toLocaleDateString()
-          : 'unknown date'
-        prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr})\n`
-      }
-    }
-
-    prBody += `\n---\n<details>\n<summary>📄 Full Execution Logs</summary>\n\n\`\`\`text\n${getLogBuffer()}\n\`\`\`\n</details>\n`
+    const prBody = generatePrBody(
+      displayName,
+      aiAssessment,
+      relevantReleases,
+      getLogBuffer()
+    )
 
     const [contextOwner, contextRepo] =
       process.env.GITHUB_REPOSITORY!.split('/')

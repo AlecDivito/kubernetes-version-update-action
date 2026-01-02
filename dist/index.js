@@ -39470,6 +39470,61 @@ function formatRisk(risk) {
             return risk;
     }
 }
+function generatePrBody(displayName, aiAssessment, relevantReleases, logBuffer, maxBodySize = 65000) {
+    let prBody = '';
+    let includeLogs = true;
+    let aiDescriptionsLimit = aiAssessment ? aiAssessment.releases.length : 0;
+    while (true) {
+        prBody = `Automated version update for **${displayName}**.\n\n`;
+        if (aiAssessment) {
+            prBody += `### 🤖 AI Risk Assessment\n`;
+            prBody += `- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n`;
+            prBody += `- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes ✅' : 'No ⚠️'}\n\n`;
+            prBody += `#### Detailed Release Summaries\n`;
+            for (let i = 0; i < aiAssessment.releases.length; i++) {
+                const rel = aiAssessment.releases[i];
+                const dateStr = rel.published_at
+                    ? new Date(rel.published_at).toLocaleDateString()
+                    : 'unknown date';
+                prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n`;
+                if (i < aiDescriptionsLimit) {
+                    prBody += `  ${rel.summary}\n`;
+                    if (rel.risk !== 'None' && rel.recommendations) {
+                        prBody += `  > **💡 Recommendation:** ${rel.recommendations}\n`;
+                    }
+                }
+            }
+        }
+        else {
+            prBody += `### 📦 Included Releases\n`;
+            for (const rel of relevantReleases) {
+                const dateStr = rel.published_at
+                    ? new Date(rel.published_at).toLocaleDateString()
+                    : 'unknown date';
+                prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr})\n`;
+            }
+        }
+        if (includeLogs) {
+            prBody += `\n---\n<details>\n<summary>📄 Full Execution Logs</summary>\n\n\`\`\`text\n${logBuffer}\n\`\`\`\n</details>\n`;
+        }
+        if (prBody.length <= maxBodySize) {
+            break;
+        }
+        // Try reducing content
+        if (includeLogs) {
+            includeLogs = false;
+        }
+        else if (aiDescriptionsLimit > 0) {
+            aiDescriptionsLimit--;
+        }
+        else {
+            // Last resort truncation
+            prBody = prBody.substring(0, maxBodySize - 50) + '\n\n...(body truncated)';
+            break;
+        }
+    }
+    return prBody;
+}
 
 class GitHubService {
     octokit;
@@ -44042,32 +44097,7 @@ async function run() {
         await execExports.exec('git', ['commit', '-m', prTitle]);
         await execExports.exec('git', ['push', 'origin', branchName, '--force']);
         // PR Creation
-        let prBody = `Automated version update for **${displayName}**.\n\n`;
-        if (aiAssessment) {
-            prBody += `### 🤖 AI Risk Assessment\n`;
-            prBody += `- **Overall Risk Level**: ${formatRisk(aiAssessment.overallRisk)}\n`;
-            prBody += `- **Overall Worry Free**: ${aiAssessment.overallWorryFree ? 'Yes ✅' : 'No ⚠️'}\n\n`;
-            prBody += `#### Detailed Release Summaries\n`;
-            for (const rel of aiAssessment.releases) {
-                const dateStr = rel.published_at
-                    ? new Date(rel.published_at).toLocaleDateString()
-                    : 'unknown date';
-                prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr}) (Risk: ${formatRisk(rel.risk)}, Worry-free: ${rel.worryFree ? 'Yes' : 'No'})\n  ${rel.summary}\n`;
-                if (rel.risk !== 'None' && rel.recommendations) {
-                    prBody += `  > **💡 Recommendation:** ${rel.recommendations}\n`;
-                }
-            }
-        }
-        else {
-            prBody += `### 📦 Included Releases\n`;
-            for (const rel of relevantReleases) {
-                const dateStr = rel.published_at
-                    ? new Date(rel.published_at).toLocaleDateString()
-                    : 'unknown date';
-                prBody += `- **[${rel.tag_name}](${rel.html_url})** (${dateStr})\n`;
-            }
-        }
-        prBody += `\n---\n<details>\n<summary>📄 Full Execution Logs</summary>\n\n\`\`\`text\n${getLogBuffer()}\n\`\`\`\n</details>\n`;
+        const prBody = generatePrBody(displayName, aiAssessment, relevantReleases, getLogBuffer());
         const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
         const labels = [];
         if (aiAssessment) {
