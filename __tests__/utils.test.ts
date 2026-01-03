@@ -1,6 +1,45 @@
-import { generatePrBody } from '../src/utils.js'
+import { generatePrBody, compareVersions, isPrerelease } from '../src/utils.js'
 
 describe('utils', () => {
+  describe('compareVersions', () => {
+    it('should identify the highest semantic version from a list of releases', () => {
+      const releases = [
+        { tag_name: 'v3.0.24' },
+        { tag_name: 'v3.2.3' },
+        { tag_name: 'v3.0.21' }
+      ]
+
+      const sorted = [...releases].sort((a, b) =>
+        compareVersions(b.tag_name, a.tag_name)
+      )
+
+      expect(sorted[0].tag_name).toBe('v3.2.3')
+      expect(sorted[1].tag_name).toBe('v3.0.24')
+      expect(sorted[2].tag_name).toBe('v3.0.21')
+    })
+
+    it('should handle versions with different number of parts', () => {
+      expect(compareVersions('v1.2.1', 'v1.2')).toBe(1)
+      expect(compareVersions('v1.2', 'v1.2.1')).toBe(-1)
+    })
+
+    it('should handle non-numeric suffixes according to semver', () => {
+      // 1.2.0 is greater than 1.2.0-beta.1
+      expect(compareVersions('v1.2.0', 'v1.2.0-beta.1')).toBe(1)
+      // beta.2 is greater than beta.1
+      expect(compareVersions('v1.2.0-beta.2', 'v1.2.0-beta.1')).toBe(1)
+      // alpha is less than beta
+      expect(compareVersions('v1.2.0-alpha', 'v1.2.0-beta')).toBe(-1)
+    })
+
+    it('should identify prerelease versions', () => {
+      expect(isPrerelease('v1.2.0-beta.1')).toBe(true)
+      expect(isPrerelease('v1.2.0-alpha.5')).toBe(true)
+      expect(isPrerelease('v1.2.0-rc.1')).toBe(true)
+      expect(isPrerelease('v1.2.0')).toBe(false)
+    })
+  })
+
   describe('generatePrBody', () => {
     const displayName = 'my-app'
     const aiAssessment = {

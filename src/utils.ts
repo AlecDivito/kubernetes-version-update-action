@@ -18,6 +18,65 @@ export function normalizeVersion(v: string): string {
   return match ? match[1] : v.replace(/^v/, '')
 }
 
+export function isPrerelease(v: string): boolean {
+  const norm = normalizeVersion(v)
+  return /[-](alpha|beta|rc|next|canary|pre)/i.test(norm)
+}
+
+export function compareVersions(v1: string, v2: string): number {
+  const norm1 = normalizeVersion(v1)
+  const norm2 = normalizeVersion(v2)
+
+  const hyphen1 = norm1.indexOf('-')
+  const ver1 = hyphen1 === -1 ? norm1 : norm1.substring(0, hyphen1)
+  const pre1 = hyphen1 === -1 ? '' : norm1.substring(hyphen1 + 1)
+
+  const hyphen2 = norm2.indexOf('-')
+  const ver2 = hyphen2 === -1 ? norm2 : norm2.substring(0, hyphen2)
+  const pre2 = hyphen2 === -1 ? '' : norm2.substring(hyphen2 + 1)
+
+  const parts1 = ver1.split('.').map(Number)
+  const parts2 = ver2.split('.').map(Number)
+
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const p1 = parts1[i] ?? 0
+    const p2 = parts2[i] ?? 0
+    if (p1 > p2) return 1
+    if (p1 < p2) return -1
+  }
+
+  if (!pre1 && pre2) return 1
+  if (pre1 && !pre2) return -1
+  if (!pre1 && !pre2) return 0
+
+  const preParts1 = pre1.split('.')
+  const preParts2 = pre2.split('.')
+  for (let i = 0; i < Math.max(preParts1.length, preParts2.length); i++) {
+    const p1 = preParts1[i]
+    const p2 = preParts2[i]
+    if (p1 === undefined) return -1
+    if (p2 === undefined) return 1
+
+    const n1 = Number(p1)
+    const n2 = Number(p2)
+    const isN1 = !isNaN(n1) && p1 !== ''
+    const isN2 = !isNaN(n2) && p2 !== ''
+
+    if (isN1 && isN2) {
+      if (n1 > n2) return 1
+      if (n1 < n2) return -1
+    } else if (isN1) {
+      return -1
+    } else if (isN2) {
+      return 1
+    } else {
+      if (p1 > p2) return 1
+      if (p1 < p2) return -1
+    }
+  }
+  return 0
+}
+
 export function getRelevantReleases(
   releases: Release[],
   currentVersion: string,

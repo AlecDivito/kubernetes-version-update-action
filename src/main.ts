@@ -12,6 +12,8 @@ import {
 import {
   log,
   normalizeVersion,
+  compareVersions,
+  isPrerelease,
   formatRisk,
   setGlobalDryRun,
   getRelevantReleases,
@@ -150,6 +152,18 @@ export async function run(): Promise<void> {
         currentVerRaw,
         config.maxReleases
       )
+
+      // Sort releases semantically to ensure the truly "latest" version is first
+      releases.sort((a, b) => compareVersions(b.tag_name, a.tag_name))
+
+      // Filter out prereleases unless the current version is already a prerelease
+      const currentIsPrerelease = isPrerelease(currentVerRaw)
+      if (!currentIsPrerelease) {
+        const stableReleases = releases.filter((r) => !isPrerelease(r.tag_name))
+        if (stableReleases.length > 0) {
+          releases = stableReleases
+        }
+      }
 
       if (config.releaseFilter) {
         const filtered = releases.find(

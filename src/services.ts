@@ -2,7 +2,7 @@ import * as github from '@actions/github'
 import https from 'https'
 import { OpenAI as OpenAIClient } from 'openai'
 import { AppConfig, Release, RiskAssessment, AggregateRisk } from './types.js'
-import { log, normalizeVersion } from './utils.js'
+import { log, normalizeVersion, compareVersions } from './utils.js'
 
 export class GitHubService {
   private octokit: ReturnType<typeof github.getOctokit>
@@ -153,9 +153,13 @@ export class DockerHubService {
           res.on('end', () => {
             if (res.statusCode! >= 400) return reject(new Error(data))
             const json = JSON.parse(data)
-            const versionTags = json.results.filter((t: { name: string }) =>
-              /^\d+\.\d+(\.\d+)?$/.test(t.name)
-            )
+            const versionTags = json.results
+              .filter((t: { name: string }) =>
+                /^\d+\.\d+(\.\d+)?$/.test(t.name)
+              )
+              .sort((a: { name: string }, b: { name: string }) =>
+                compareVersions(b.name, a.name)
+              )
             const latestTag =
               versionTags[0] ||
               json.results.find((t: { name: string }) => t.name !== 'latest') ||

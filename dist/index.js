@@ -39434,6 +39434,69 @@ function normalizeVersion(v) {
     const match = v.match(/(\d+\.\d+.*)$/);
     return match ? match[1] : v.replace(/^v/, '');
 }
+function isPrerelease(v) {
+    const norm = normalizeVersion(v);
+    return /[-](alpha|beta|rc|next|canary|pre)/i.test(norm);
+}
+function compareVersions(v1, v2) {
+    const norm1 = normalizeVersion(v1);
+    const norm2 = normalizeVersion(v2);
+    const hyphen1 = norm1.indexOf('-');
+    const ver1 = hyphen1 === -1 ? norm1 : norm1.substring(0, hyphen1);
+    const pre1 = hyphen1 === -1 ? '' : norm1.substring(hyphen1 + 1);
+    const hyphen2 = norm2.indexOf('-');
+    const ver2 = hyphen2 === -1 ? norm2 : norm2.substring(0, hyphen2);
+    const pre2 = hyphen2 === -1 ? '' : norm2.substring(hyphen2 + 1);
+    const parts1 = ver1.split('.').map(Number);
+    const parts2 = ver2.split('.').map(Number);
+    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+        const p1 = parts1[i] ?? 0;
+        const p2 = parts2[i] ?? 0;
+        if (p1 > p2)
+            return 1;
+        if (p1 < p2)
+            return -1;
+    }
+    if (!pre1 && pre2)
+        return 1;
+    if (pre1 && !pre2)
+        return -1;
+    if (!pre1 && !pre2)
+        return 0;
+    const preParts1 = pre1.split('.');
+    const preParts2 = pre2.split('.');
+    for (let i = 0; i < Math.max(preParts1.length, preParts2.length); i++) {
+        const p1 = preParts1[i];
+        const p2 = preParts2[i];
+        if (p1 === undefined)
+            return -1;
+        if (p2 === undefined)
+            return 1;
+        const n1 = Number(p1);
+        const n2 = Number(p2);
+        const isN1 = !isNaN(n1) && p1 !== '';
+        const isN2 = !isNaN(n2) && p2 !== '';
+        if (isN1 && isN2) {
+            if (n1 > n2)
+                return 1;
+            if (n1 < n2)
+                return -1;
+        }
+        else if (isN1) {
+            return -1;
+        }
+        else if (isN2) {
+            return 1;
+        }
+        else {
+            if (p1 > p2)
+                return 1;
+            if (p1 < p2)
+                return -1;
+        }
+    }
+    return 0;
+}
 function getRelevantReleases(releases, currentVersion, maxReleases) {
     const cur = normalizeVersion(currentVersion);
     const relevant = [];
@@ -39645,7 +39708,9 @@ class DockerHubService {
                     if (res.statusCode >= 400)
                         return reject(new Error(data));
                     const json = JSON.parse(data);
-                    const versionTags = json.results.filter((t) => /^\d+\.\d+(\.\d+)?$/.test(t.name));
+                    const versionTags = json.results
+                        .filter((t) => /^\d+\.\d+(\.\d+)?$/.test(t.name))
+                        .sort((a, b) => compareVersions(b.name, a.name));
                     const latestTag = versionTags[0] ||
                         json.results.find((t) => t.name !== 'latest') ||
                         json.results[0];
@@ -43961,6 +44026,16 @@ async function run() {
             if (!owner || !repoName)
                 throw new Error(`Invalid repo format for GitHub source: ${config.repo}`);
             releases = await ghService.fetchAllReleases(owner, repoName, currentVerRaw, config.maxReleases);
+            // Sort releases semantically to ensure the truly "latest" version is first
+            releases.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
+            // Filter out prereleases unless the current version is already a prerelease
+            const currentIsPrerelease = isPrerelease(currentVerRaw);
+            if (!currentIsPrerelease) {
+                const stableReleases = releases.filter((r) => !isPrerelease(r.tag_name));
+                if (stableReleases.length > 0) {
+                    releases = stableReleases;
+                }
+            }
             if (config.releaseFilter) {
                 const filtered = releases.find((r) => r.tag_name.includes(config.releaseFilter) ||
                     (r.name && r.name.includes(config.releaseFilter)));
