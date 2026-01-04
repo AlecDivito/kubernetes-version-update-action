@@ -23,6 +23,52 @@ export function isPrerelease(v: string): boolean {
   return norm.includes('-')
 }
 
+export function applyVersionLag(
+  releases: Release[],
+  versionLag: number,
+  depth: 'major' | 'minor' | 'patch' = 'minor'
+): Release[] {
+  if (versionLag <= 0 || releases.length === 0) return releases
+
+  const groups: string[] = []
+  const uniqueGroups = new Set<string>()
+  for (const r of releases) {
+    const norm = normalizeVersion(r.tag_name)
+    const parts = norm.split('.')
+    const requiredLength = depth === 'major' ? 1 : depth === 'minor' ? 2 : 3
+
+    if (parts.length >= requiredLength) {
+      let group = ''
+      if (depth === 'major') {
+        group = parts[0]
+      } else if (depth === 'minor') {
+        group = `${parts[0]}.${parts[1]}`
+      } else {
+        group = `${parts[0]}.${parts[1]}.${parts[2]}`
+      }
+
+      if (!uniqueGroups.has(group)) {
+        uniqueGroups.add(group)
+        groups.push(group)
+      }
+    }
+  }
+
+  if (groups.length > versionLag) {
+    const targetGroup = groups[versionLag]
+    return releases.filter((r) => {
+      const norm = normalizeVersion(r.tag_name)
+      // For patch depth, we need exact match since the group is the full version
+      if (depth === 'patch') {
+        return norm === targetGroup
+      }
+      return norm.startsWith(`${targetGroup}.`) || norm === targetGroup
+    })
+  }
+
+  return releases
+}
+
 export function compareVersions(v1: string, v2: string): number {
   const norm1 = normalizeVersion(v1)
   const norm2 = normalizeVersion(v2)

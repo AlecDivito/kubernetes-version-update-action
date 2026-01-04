@@ -14,6 +14,7 @@ import {
   normalizeVersion,
   compareVersions,
   isPrerelease,
+  applyVersionLag,
   formatRisk,
   setGlobalDryRun,
   getRelevantReleases,
@@ -50,7 +51,12 @@ export async function run(): Promise<void> {
       gitUserName: core.getInput('git_user_name'),
       gitUserEmail: core.getInput('git_user_email'),
       configFile: core.getInput('config_file') || 'versions-config.yaml',
-      includePrereleases: core.getInput('include_prereleases') === 'true'
+      includePrereleases: core.getInput('include_prereleases') === 'true',
+      versionLag: parseInt(core.getInput('version_lag') || '0'),
+      versionLagDepth: (core.getInput('version_lag_depth') || 'minor') as
+        | 'major'
+        | 'minor'
+        | 'patch'
     }
 
     setGlobalDryRun(config.dryRun)
@@ -158,11 +164,35 @@ export async function run(): Promise<void> {
       releases.sort((a, b) => compareVersions(b.tag_name, a.tag_name))
 
       // Filter out prereleases unless configured otherwise or current is a prerelease
+      // This should happen BEFORE version lag so that lag is calculated relative to the allowed track
       const currentIsPrerelease = isPrerelease(currentVerRaw)
       if (!config.includePrereleases && !currentIsPrerelease) {
-        const stableReleases = releases.filter((r) => !isPrerelease(r.tag_name))
-        if (stableReleases.length > 0) {
-          releases = stableReleases
+        releases = releases.filter((r) => !isPrerelease(r.tag_name))
+      }
+
+      // Apply version lag if configured
+      if (config.versionLag > 0) {
+        const originalCount = releases.length
+        releases = applyVersionLag(
+          releases,
+          config.versionLag,
+          config.versionLagDepth
+        )
+        if (releases.length < originalCount) {
+          const sliceEnd =
+            config.versionLagDepth === 'major'
+              ? 1
+              : config.versionLagDepth === 'minor'
+                ? 2
+                : 3
+
+          const targetGroup = normalizeVersion(releases[0].tag_name)
+            .split('.')
+            .slice(0, sliceEnd)
+            .join('.')
+          log(
+            `⏳ Version lag is active. Skipping ${config.versionLag} ${config.versionLagDepth} version(s). Target version group is ${targetGroup}.x`
+          )
         }
       }
 

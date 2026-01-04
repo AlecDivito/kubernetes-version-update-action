@@ -1,6 +1,75 @@
-import { generatePrBody, compareVersions, isPrerelease } from '../src/utils.js'
+import {
+  generatePrBody,
+  compareVersions,
+  isPrerelease,
+  applyVersionLag
+} from '../src/utils.js'
 
 describe('utils', () => {
+  describe('applyVersionLag', () => {
+    const releases = [
+      { tag_name: 'v1.11.0', html_url: '', published_at: '' },
+      { tag_name: 'v1.10.2', html_url: '', published_at: '' },
+      { tag_name: 'v1.10.1', html_url: '', published_at: '' },
+      { tag_name: 'v1.10.0', html_url: '', published_at: '' },
+      { tag_name: 'v1.9.3', html_url: '', published_at: '' },
+      { tag_name: 'v1.9.2', html_url: '', published_at: '' }
+    ]
+
+    it('should not filter anything if lag is 0', () => {
+      const filtered = applyVersionLag(releases, 0)
+      expect(filtered).toHaveLength(releases.length)
+      expect(filtered[0].tag_name).toBe('v1.11.0')
+    })
+
+    it('should lag by 1 minor version', () => {
+      const filtered = applyVersionLag(releases, 1, 'minor')
+      // Should pick latest from the 1st group (v1.10)
+      expect(filtered[0].tag_name).toBe('v1.10.2')
+      expect(filtered.every((r) => r.tag_name.startsWith('v1.10.'))).toBe(true)
+    })
+
+    it('should lag by 2 minor versions', () => {
+      const filtered = applyVersionLag(releases, 2, 'minor')
+      // Should pick latest from the 2nd group (v1.9)
+      expect(filtered[0].tag_name).toBe('v1.9.3')
+      expect(filtered.every((r) => r.tag_name.startsWith('v1.9.'))).toBe(true)
+    })
+
+    it('should lag by 1 major version', () => {
+      const majorReleases = [
+        { tag_name: 'v3.0.0', html_url: '', published_at: '' },
+        { tag_name: 'v2.5.0', html_url: '', published_at: '' },
+        { tag_name: 'v2.4.0', html_url: '', published_at: '' },
+        { tag_name: 'v1.0.0', html_url: '', published_at: '' }
+      ]
+      const filtered = applyVersionLag(majorReleases, 1, 'major')
+      // Lag 1 major version: v3 -> v2
+      expect(filtered[0].tag_name).toBe('v2.5.0')
+      expect(filtered.every((r) => r.tag_name.startsWith('v2.'))).toBe(true)
+    })
+
+    it('should lag by 1 patch version', () => {
+      const patchReleases = [
+        { tag_name: 'v1.0.3', html_url: '', published_at: '' },
+        { tag_name: 'v1.0.2', html_url: '', published_at: '' },
+        { tag_name: 'v1.0.1', html_url: '', published_at: '' }
+      ]
+      // Lag 1 patch version: v1.0.3 -> v1.0.2
+      const filtered = applyVersionLag(patchReleases, 1, 'patch')
+      expect(filtered[0].tag_name).toBe('v1.0.2')
+      // Note: patch lag implies picking a specific patch version, so filtering by "group" (which is the full version)
+      // returns ONLY that version.
+      expect(filtered).toHaveLength(1)
+    })
+
+    it('should return original list if not enough groups exist', () => {
+      const filtered = applyVersionLag(releases, 5)
+      expect(filtered).toHaveLength(releases.length)
+      expect(filtered[0].tag_name).toBe('v1.11.0')
+    })
+  })
+
   describe('compareVersions', () => {
     it('should identify the highest semantic version from a list of releases', () => {
       const releases = [

@@ -3,3 +3,10 @@ applications:
     type: 'manual'
     version: 'v2.12.6'
     description: 'Manual upgrade context...'
+  - repo: 'longhorn/longhorn'
+    type: 'kubernetes'
+    versionLag: 1 # Stay one version behind
+    versionLagDepth: 'minor' # 'major' or 'minor' (default: minor)
+    targets:
+      - file: 'services/longhorn/deployment.yaml'
+        path: 'spec.template.spec.containers.0.image'

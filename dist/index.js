@@ -39438,6 +39438,45 @@ function isPrerelease(v) {
     const norm = normalizeVersion(v);
     return norm.includes('-');
 }
+function applyVersionLag(releases, versionLag, depth = 'minor') {
+    if (versionLag <= 0 || releases.length === 0)
+        return releases;
+    const groups = [];
+    const uniqueGroups = new Set();
+    for (const r of releases) {
+        const norm = normalizeVersion(r.tag_name);
+        const parts = norm.split('.');
+        const requiredLength = depth === 'major' ? 1 : depth === 'minor' ? 2 : 3;
+        if (parts.length >= requiredLength) {
+            let group = '';
+            if (depth === 'major') {
+                group = parts[0];
+            }
+            else if (depth === 'minor') {
+                group = `${parts[0]}.${parts[1]}`;
+            }
+            else {
+                group = `${parts[0]}.${parts[1]}.${parts[2]}`;
+            }
+            if (!uniqueGroups.has(group)) {
+                uniqueGroups.add(group);
+                groups.push(group);
+            }
+        }
+    }
+    if (groups.length > versionLag) {
+        const targetGroup = groups[versionLag];
+        return releases.filter((r) => {
+            const norm = normalizeVersion(r.tag_name);
+            // For patch depth, we need exact match since the group is the full version
+            if (depth === 'patch') {
+                return norm === targetGroup;
+            }
+            return norm.startsWith(`${targetGroup}.`) || norm === targetGroup;
+        });
+    }
+    return releases;
+}
 function compareVersions(v1, v2) {
     const norm1 = normalizeVersion(v1);
     const norm2 = normalizeVersion(v2);
@@ -43950,7 +43989,9 @@ async function run() {
             gitUserName: coreExports.getInput('git_user_name'),
             gitUserEmail: coreExports.getInput('git_user_email'),
             configFile: coreExports.getInput('config_file') || 'versions-config.yaml',
-            includePrereleases: coreExports.getInput('include_prereleases') === 'true'
+            includePrereleases: coreExports.getInput('include_prereleases') === 'true',
+            versionLag: parseInt(coreExports.getInput('version_lag') || '0'),
+            versionLagDepth: (coreExports.getInput('version_lag_depth') || 'minor')
         };
         setGlobalDryRun(config.dryRun);
         const [owner, repoName] = config.repo.includes('/')
@@ -44030,11 +44071,26 @@ async function run() {
             // Sort releases semantically to ensure the truly "latest" version is first
             releases.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
             // Filter out prereleases unless configured otherwise or current is a prerelease
+            // This should happen BEFORE version lag so that lag is calculated relative to the allowed track
             const currentIsPrerelease = isPrerelease(currentVerRaw);
             if (!config.includePrereleases && !currentIsPrerelease) {
-                const stableReleases = releases.filter((r) => !isPrerelease(r.tag_name));
-                if (stableReleases.length > 0) {
-                    releases = stableReleases;
+                releases = releases.filter((r) => !isPrerelease(r.tag_name));
+            }
+            // Apply version lag if configured
+            if (config.versionLag > 0) {
+                const originalCount = releases.length;
+                releases = applyVersionLag(releases, config.versionLag, config.versionLagDepth);
+                if (releases.length < originalCount) {
+                    const sliceEnd = config.versionLagDepth === 'major'
+                        ? 1
+                        : config.versionLagDepth === 'minor'
+                            ? 2
+                            : 3;
+                    const targetGroup = normalizeVersion(releases[0].tag_name)
+                        .split('.')
+                        .slice(0, sliceEnd)
+                        .join('.');
+                    log(`⏳ Version lag is active. Skipping ${config.versionLag} ${config.versionLagDepth} version(s). Target version group is ${targetGroup}.x`);
                 }
             }
             if (config.releaseFilter) {

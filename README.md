@@ -75,6 +75,7 @@ jobs:
           version: ${{ matrix.version }}
           description: ${{ matrix.description }}
           release_filter: ${{ matrix.releaseFilter }}
+          version_lag: ${{ matrix.versionLag || 0 }}
           openai_base_url: ${{ secrets.OPENAI_BASE_URL }}
           openai_model: ${{ secrets.OPENAI_MODEL }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -105,6 +106,13 @@ applications:
       ArgoCD is managed via a manual install script. When upgrading:
       1. Run 'kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v{{version}}/manifests/install.yaml'
       2. Verify all pods are running.
+  - repo: 'longhorn/longhorn'
+    type: 'kubernetes'
+    versionLag: 1 # Stay one version behind
+    versionLagDepth: 'minor' # 'major', 'minor', or 'patch' (default: minor)
+    targets:
+      - file: 'services/longhorn/deployment.yaml'
+        path: 'spec.template.spec.containers.0.image'
 ```
 
 ## Inputs
@@ -128,6 +136,9 @@ applications:
 | `git_user_name`          | Name of the Git user for commits.                                                     | No       | `github-actions[bot]`                          |
 | `git_user_email`         | Email of the Git user for commits.                                                    | No       | `github-actions[bot]@users.noreply.github.com` |
 | `config_file`            | Path to the configuration file (e.g., `versions-config.yaml`).                        | No       | `versions-config.yaml`                         |
+| `include_prereleases`    | Whether to include prerelease versions in updates.                                    | No       | `false`                                        |
+| `version_lag`            | Number of versions to lag behind (e.g. 1 means stay on previous version).             | No       | `0`                                            |
+| `version_lag_depth`      | Depth of versioning to apply lag to (`major`, `minor`, or `patch`).                   | No       | `minor`                                        |
 
 ## Local Development & Testing
 

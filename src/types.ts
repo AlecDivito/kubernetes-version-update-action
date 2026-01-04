@@ -24,6 +24,8 @@ export interface AppConfig {
   gitUserEmail: string
   configFile: string
   includePrereleases: boolean
+  versionLag: number
+  versionLagDepth: 'major' | 'minor' | 'patch'
 }
 
 export interface Release {

@@ -87,6 +87,18 @@ inputs:
     description: Whether to include prerelease versions in updates.
     required: false
     default: 'false'
+  version_lag:
+    description:
+      Number of versions to lag behind (e.g., 1 means stay on the previous
+      version).
+    required: false
+    default: '0'
+  version_lag_depth:
+    description:
+      The depth of versioning to apply the lag to (major, minor, or patch).
+      Default is minor.
+    required: false
+    default: 'minor'
 
 runs:
   using: node24
