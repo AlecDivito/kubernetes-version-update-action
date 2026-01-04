@@ -49,7 +49,8 @@ export async function run(): Promise<void> {
       githubToken: core.getInput('github_token', { required: true }),
       gitUserName: core.getInput('git_user_name'),
       gitUserEmail: core.getInput('git_user_email'),
-      configFile: core.getInput('config_file') || 'versions-config.yaml'
+      configFile: core.getInput('config_file') || 'versions-config.yaml',
+      includePrereleases: core.getInput('include_prereleases') === 'true'
     }
 
     setGlobalDryRun(config.dryRun)
@@ -156,9 +157,9 @@ export async function run(): Promise<void> {
       // Sort releases semantically to ensure the truly "latest" version is first
       releases.sort((a, b) => compareVersions(b.tag_name, a.tag_name))
 
-      // Filter out prereleases unless the current version is already a prerelease
+      // Filter out prereleases unless configured otherwise or current is a prerelease
       const currentIsPrerelease = isPrerelease(currentVerRaw)
-      if (!currentIsPrerelease) {
+      if (!config.includePrereleases && !currentIsPrerelease) {
         const stableReleases = releases.filter((r) => !isPrerelease(r.tag_name))
         if (stableReleases.length > 0) {
           releases = stableReleases

@@ -20,7 +20,7 @@ export function normalizeVersion(v: string): string {
 
 export function isPrerelease(v: string): boolean {
   const norm = normalizeVersion(v)
-  return /[-](alpha|beta|rc|next|canary|pre)/i.test(norm)
+  return norm.includes('-')
 }
 
 export function compareVersions(v1: string, v2: string): number {

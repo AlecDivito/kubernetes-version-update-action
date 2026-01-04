@@ -23,6 +23,7 @@ export interface AppConfig {
   gitUserName: string
   gitUserEmail: string
   configFile: string
+  includePrereleases: boolean
 }
 
 export interface Release {

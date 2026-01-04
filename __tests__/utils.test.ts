@@ -36,6 +36,8 @@ describe('utils', () => {
       expect(isPrerelease('v1.2.0-beta.1')).toBe(true)
       expect(isPrerelease('v1.2.0-alpha.5')).toBe(true)
       expect(isPrerelease('v1.2.0-rc.1')).toBe(true)
+      expect(isPrerelease('v0.108.0-b.79')).toBe(true)
+      expect(isPrerelease('v1.2.0-anything')).toBe(true)
       expect(isPrerelease('v1.2.0')).toBe(false)
     })
   })

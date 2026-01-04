@@ -39436,7 +39436,7 @@ function normalizeVersion(v) {
 }
 function isPrerelease(v) {
     const norm = normalizeVersion(v);
-    return /[-](alpha|beta|rc|next|canary|pre)/i.test(norm);
+    return norm.includes('-');
 }
 function compareVersions(v1, v2) {
     const norm1 = normalizeVersion(v1);
@@ -43949,7 +43949,8 @@ async function run() {
             githubToken: coreExports.getInput('github_token', { required: true }),
             gitUserName: coreExports.getInput('git_user_name'),
             gitUserEmail: coreExports.getInput('git_user_email'),
-            configFile: coreExports.getInput('config_file') || 'versions-config.yaml'
+            configFile: coreExports.getInput('config_file') || 'versions-config.yaml',
+            includePrereleases: coreExports.getInput('include_prereleases') === 'true'
         };
         setGlobalDryRun(config.dryRun);
         const [owner, repoName] = config.repo.includes('/')
@@ -44028,9 +44029,9 @@ async function run() {
             releases = await ghService.fetchAllReleases(owner, repoName, currentVerRaw, config.maxReleases);
             // Sort releases semantically to ensure the truly "latest" version is first
             releases.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
-            // Filter out prereleases unless the current version is already a prerelease
+            // Filter out prereleases unless configured otherwise or current is a prerelease
             const currentIsPrerelease = isPrerelease(currentVerRaw);
-            if (!currentIsPrerelease) {
+            if (!config.includePrereleases && !currentIsPrerelease) {
                 const stableReleases = releases.filter((r) => !isPrerelease(r.tag_name));
                 if (stableReleases.length > 0) {
                     releases = stableReleases;

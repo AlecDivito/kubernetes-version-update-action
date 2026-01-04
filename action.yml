@@ -83,6 +83,10 @@ inputs:
     description: Path to the configuration file.
     required: false
     default: 'versions-config.yaml'
+  include_prereleases:
+    description: Whether to include prerelease versions in updates.
+    required: false
+    default: 'false'
 
 runs:
   using: node24
