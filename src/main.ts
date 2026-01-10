@@ -148,7 +148,11 @@ export async function run(): Promise<void> {
     }
 
     if (config.source === 'dockerhub') {
-      latestRelease = await dhService.fetchLatestTag(config.repo)
+      latestRelease = await dhService.fetchLatestTag(
+        config.repo,
+        currentVerRaw,
+        config.maxReleases
+      )
     } else {
       if (!owner || !repoName)
         throw new Error(`Invalid repo format for GitHub source: ${config.repo}`)

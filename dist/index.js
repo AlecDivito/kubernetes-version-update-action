@@ -39733,35 +39733,74 @@ class GitHubService {
     }
 }
 class DockerHubService {
-    async fetchLatestTag(repo) {
-        return new Promise((resolve, reject) => {
-            const isOfficial = !repo.includes('/');
-            const fullRepo = isOfficial ? `library/${repo}` : repo;
-            const url = `https://hub.docker.com/v2/repositories/${fullRepo}/tags?page_size=20&ordering=last_updated`;
+    async fetchLatestTag(repo, currentVersion, maxReleases = 20) {
+        const isOfficial = !repo.includes('/');
+        const fullRepo = isOfficial ? `library/${repo}` : repo;
+        const cur = currentVersion ? normalizeVersion(currentVersion) : null;
+        // Determine how many pages to fetch
+        // Similar to GitHubService, if we have a limit, we fetch enough pages.
+        // If infinite, we cap at 20 pages (600 tags) to be safe.
+        const MAX_PAGES = maxReleases === Infinity ? 20 : Math.ceil(maxReleases / 30) + 2;
+        const maxLog = maxReleases === Infinity ? 'No Limit' : maxReleases;
+        let allTags = [];
+        log(`☎️  Fetching tags for ${repo} until ${currentVersion || 'latest'} (Max: ${maxLog})...`);
+        for (let page = 1; page <= MAX_PAGES; page++) {
+            const url = `https://hub.docker.com/v2/repositories/${fullRepo}/tags?page_size=30&page=${page}&ordering=last_updated`;
             log(`☎️  Calling Docker Hub GET ${url}`);
+            try {
+                const pageTags = await this.fetchPage(url, isOfficial ? repo : repo);
+                if (pageTags.length === 0)
+                    break;
+                allTags = allTags.concat(pageTags);
+                // If we found the current version, we might have enough info to pick the latest
+                // But since we want the *highest* version, and pages are by date,
+                // finding current version doesn't guarantee we saw all newer versions (if backfilled).
+                // However, usually "latest" is recent.
+                // We'll trust the limit or finding the current version as a stopping point.
+                if (cur && pageTags.find((t) => normalizeVersion(t.tag_name) === cur)) {
+                    log(`✅ Found current version ${currentVersion} at page ${page}`);
+                    break;
+                }
+            }
+            catch (e) {
+                // If 404 on a page > 1, it just means no more pages.
+                if (page > 1)
+                    break;
+                throw e;
+            }
+        }
+        if (allTags.length === 0) {
+            throw new Error(`No tags found for ${repo}`);
+        }
+        // Sort all gathered tags semantically
+        allTags.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
+        return allTags[0];
+    }
+    fetchPage(url, repoName) {
+        return new Promise((resolve, reject) => {
             require$$1
                 .get(url, { headers: { 'User-Agent': 'version-bumper' } }, (res) => {
                 let data = '';
                 res.on('data', (c) => (data += c));
                 res.on('end', () => {
-                    if (res.statusCode >= 400)
+                    if (res.statusCode >= 400) {
+                        if (res.statusCode === 404)
+                            return resolve([]);
                         return reject(new Error(data));
-                    const json = JSON.parse(data);
-                    const versionTags = json.results
-                        .filter((t) => /^\d+\.\d+(\.\d+)?$/.test(t.name))
-                        .sort((a, b) => compareVersions(b.name, a.name));
-                    const latestTag = versionTags[0] ||
-                        json.results.find((t) => t.name !== 'latest') ||
-                        json.results[0];
-                    if (latestTag) {
-                        resolve({
-                            tag_name: latestTag.name,
-                            published_at: latestTag.last_updated,
-                            html_url: `https://hub.docker.com/_/${isOfficial ? repo : repo}`
-                        });
                     }
-                    else {
-                        reject(new Error(`No tags found for ${repo}`));
+                    try {
+                        const json = JSON.parse(data);
+                        const validTags = json.results
+                            .filter((t) => /^\d+\.\d+(\.\d+)?$/.test(t.name))
+                            .map((t) => ({
+                            tag_name: t.name,
+                            published_at: t.last_updated,
+                            html_url: `https://hub.docker.com/_/${repoName}`
+                        }));
+                        resolve(validTags);
+                    }
+                    catch (e) {
+                        reject(e);
                     }
                 });
             })
@@ -44062,7 +44101,7 @@ async function run() {
             }
         }
         if (config.source === 'dockerhub') {
-            latestRelease = await dhService.fetchLatestTag(config.repo);
+            latestRelease = await dhService.fetchLatestTag(config.repo, currentVerRaw, config.maxReleases);
         }
         else {
             if (!owner || !repoName)
