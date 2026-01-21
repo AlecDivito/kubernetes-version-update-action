@@ -135,6 +135,42 @@ export class GitHubService {
       })
     }
   }
+
+  async closeOutdatedPullRequests(
+    owner: string,
+    repo: string,
+    branchPrefix: string,
+    currentBranch: string
+  ): Promise<void> {
+    log(`☎️  Checking for outdated Pull Requests with prefix: ${branchPrefix}`)
+    const { data: pullRequests } = await this.octokit.rest.pulls.list({
+      owner,
+      repo,
+      state: 'open',
+      per_page: 100
+    })
+
+    for (const pr of pullRequests) {
+      if (
+        pr.head.ref.startsWith(branchPrefix) &&
+        pr.head.ref !== currentBranch
+      ) {
+        log(`☎️  Closing outdated Pull Request #${pr.number}: ${pr.title}`)
+        await this.octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: pr.number,
+          body: `Closing this PR because a newer version update is available: ${currentBranch}`
+        })
+        await this.octokit.rest.pulls.update({
+          owner,
+          repo,
+          pull_number: pr.number,
+          state: 'closed'
+        })
+      }
+    }
+  }
 }
 
 export class DockerHubService {

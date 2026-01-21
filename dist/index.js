@@ -39855,6 +39855,33 @@ class GitHubService {
             });
         }
     }
+    async closeOutdatedPullRequests(owner, repo, branchPrefix, currentBranch) {
+        log(`☎️  Checking for outdated Pull Requests with prefix: ${branchPrefix}`);
+        const { data: pullRequests } = await this.octokit.rest.pulls.list({
+            owner,
+            repo,
+            state: 'open',
+            per_page: 100
+        });
+        for (const pr of pullRequests) {
+            if (pr.head.ref.startsWith(branchPrefix) &&
+                pr.head.ref !== currentBranch) {
+                log(`☎️  Closing outdated Pull Request #${pr.number}: ${pr.title}`);
+                await this.octokit.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pr.number,
+                    body: `Closing this PR because a newer version update is available: ${currentBranch}`
+                });
+                await this.octokit.rest.pulls.update({
+                    owner,
+                    repo,
+                    pull_number: pr.number,
+                    state: 'closed'
+                });
+            }
+        }
+    }
 }
 class DockerHubService {
     async fetchLatestTag(repo, currentVersion, maxReleases = 20) {
@@ -44394,6 +44421,8 @@ async function run() {
         // PR Creation
         const prBody = generatePrBody(displayName, aiAssessment, relevantReleases, getLogBuffer());
         const [contextOwner, contextRepo] = process.env.GITHUB_REPOSITORY.split('/');
+        const branchPrefix = `bot/update-${repoName || config.repo}-`.replace(/\//g, '-');
+        await ghService.closeOutdatedPullRequests(contextOwner, contextRepo, branchPrefix, branchName);
         const labels = [];
         if (aiAssessment) {
             const riskColors = {

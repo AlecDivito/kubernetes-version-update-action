@@ -432,6 +432,18 @@ export async function run(): Promise<void> {
     const [contextOwner, contextRepo] =
       process.env.GITHUB_REPOSITORY!.split('/')
 
+    const branchPrefix = `bot/update-${repoName || config.repo}-`.replace(
+      /\//g,
+      '-'
+    )
+
+    await ghService.closeOutdatedPullRequests(
+      contextOwner,
+      contextRepo,
+      branchPrefix,
+      branchName
+    )
+
     const labels: { name: string; color: string }[] = []
     if (aiAssessment) {
       const riskColors: Record<string, string> = {
