@@ -2,6 +2,103 @@ import fs from 'fs'
 import yaml from 'js-yaml'
 import { log } from './utils.js'
 
+function getLineIndent(line: string): number {
+  const match = line.match(/^(\s*)/)
+  return match ? match[1].length : 0
+}
+
+export function findLineIndexForYamlPath(
+  content: string,
+  path: string
+): number {
+  const segments = path.split('.')
+  const lines = content.split('\n')
+
+  function findSegment(
+    startLine: number,
+    segIndex: number,
+    parentIndent: number
+  ): number {
+    if (segIndex >= segments.length) return -1
+
+    const segment = segments[segIndex]
+
+    if (/^\d+$/.test(segment)) {
+      const targetIndex = parseInt(segment, 10)
+      let listIndex = 0
+
+      for (let i = startLine; i < lines.length; i++) {
+        const line = lines[i]
+        if (!line.trim()) continue
+
+        const indent = getLineIndent(line)
+        if (indent <= parentIndent && listIndex > 0) break
+
+        if (!line.match(/^\s*-\s+/)) continue
+
+        if (listIndex === targetIndex) {
+          if (segIndex + 1 >= segments.length) return i
+
+          const nextSegment = segments[segIndex + 1]
+          const inlineKeyMatch = line.match(/^\s*-\s+(\w+):/)
+          if (inlineKeyMatch?.[1] === nextSegment) {
+            return segIndex + 1 === segments.length - 1
+              ? i
+              : findSegment(i + 1, segIndex + 2, indent)
+          }
+
+          const result = findSegment(i + 1, segIndex + 1, indent)
+          if (result !== -1) return result
+        }
+
+        listIndex++
+      }
+
+      return -1
+    }
+
+    for (let i = startLine; i < lines.length; i++) {
+      const line = lines[i]
+      if (!line.trim()) continue
+
+      const indent = getLineIndent(line)
+      if (indent <= parentIndent && i > startLine) break
+
+      const keyMatch = line.match(/^(\s*)(?:-\s+)?([\w-]+):/)
+      if (!keyMatch || keyMatch[2] !== segment) continue
+      if (indent <= parentIndent && i > startLine) break
+
+      if (segIndex === segments.length - 1) return i
+
+      const result = findSegment(i + 1, segIndex + 1, indent)
+      if (result !== -1) return result
+    }
+
+    return -1
+  }
+
+  return findSegment(0, 0, -1)
+}
+
+function updateLineValue(line: string, key: string, replaceVal: string): string {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(
+    `^(\\s*(?:-\\s*)?${escapedKey}:\\s*)(.+?)(\\s*(?:#.*)?)$`
+  )
+  const match = line.match(regex)
+  if (!match) {
+    throw new Error(`Could not update key "${key}" on line: ${line}`)
+  }
+
+  const valuePart = match[2].trim()
+  const quotedMatch = valuePart.match(/^(['"])(.*)\1$/)
+  if (quotedMatch) {
+    return `${match[1]}${quotedMatch[1]}${replaceVal}${quotedMatch[1]}${match[3]}`
+  }
+
+  return `${match[1]}${replaceVal}${match[3]}`
+}
+
 export function getYamlValue(file: string, path: string): string | null {
   if (!fs.existsSync(file)) {
     throw new Error(`File not found: ${file}`)
@@ -41,7 +138,6 @@ export function setYamlValue(
   }
 
   const targetKey = path.split('.').pop()!
-  const searchVal = oldValue || ''
   let replaceVal = newValue
 
   if (type === 'kubernetes' && oldValue && oldValue.includes(':')) {
@@ -49,27 +145,14 @@ export function setYamlValue(
     replaceVal = `${repo}:${newValue}`
   }
 
-  const escapedOldValue = searchVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const regex = new RegExp(
-    `^(\\s*(?:-\\s*)?${targetKey}:\\s*)(${escapedOldValue})(.*)$`,
-    'm'
-  )
-
-  let newContent: string
-  if (!regex.test(content)) {
-    const fallbackRegex = new RegExp(
-      `^(\\s*(?:-\\s*)?${targetKey}:\\s*)([^#\\n]+)(.*)$`,
-      'm'
-    )
-    if (!fallbackRegex.test(content)) {
-      throw new Error(`Could not find key "${targetKey}" in ${file}`)
-    }
-    newContent = content.replace(fallbackRegex, `$1${replaceVal}$3`)
-  } else {
-    newContent = content.replace(regex, `$1${replaceVal}$3`)
+  const lineIndex = findLineIndexForYamlPath(content, path)
+  if (lineIndex === -1) {
+    throw new Error(`Could not find path "${path}" in ${file}`)
   }
 
-  fs.writeFileSync(file, newContent)
+  const lines = content.split('\n')
+  lines[lineIndex] = updateLineValue(lines[lineIndex], targetKey, replaceVal)
+  fs.writeFileSync(file, lines.join('\n'))
 }
 
 export function removeApplicationFromConfig(

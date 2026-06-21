@@ -74,6 +74,43 @@ spec:
     expect(updated).not.toContain('$3')
   })
 
+  it('updates the correct image when multiple image keys exist in one file', () => {
+    const content = `
+spec:
+  template:
+    spec:
+      initContainers:
+        - image: wgportal/wg-portal:v2.3.0
+          name: configurator
+      containers:
+        - name: wg-portal
+          imagePullPolicy: IfNotPresent
+          image: "wgportal/wg-portal:v2.1.1"
+`.trim()
+    fs.writeFileSync(testFile, content)
+
+    setYamlValue(
+      testFile,
+      'spec.template.spec.containers.0.image',
+      'v2.3.1',
+      'kubernetes',
+      false
+    )
+    setYamlValue(
+      testFile,
+      'spec.template.spec.initContainers.0.image',
+      'v2.3.1',
+      'kubernetes',
+      false
+    )
+
+    const updated = fs.readFileSync(testFile, 'utf8')
+    expect(updated).toContain('image: wgportal/wg-portal:v2.3.1')
+    expect(updated).toContain('image: "wgportal/wg-portal:v2.3.1"')
+    expect(updated).not.toContain('v2.1.1')
+    expect(updated).not.toContain('v2.3.0')
+  })
+
   describe('removeApplicationFromConfig', () => {
     it('removes an application from a list', () => {
       const content = `
