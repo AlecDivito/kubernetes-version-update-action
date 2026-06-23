@@ -23,7 +23,7 @@ Requires `contents: write` and `pull-requests: write` on `GITHUB_TOKEN` unless
 | `targets`                | JSON array of `{ "file", "path" }` to update (not used for `manual`).         | No       | -                                              |
 | `version`                | Current version (required for `manual`).                                      | No       | -                                              |
 | `description`            | Upgrade context for AI analysis and manual PR bodies.                         | No       | -                                              |
-| `release_filter`         | Substring filter when a repo publishes many releases.                         | No       | -                                              |
+| `release_filter`         | Substring filter when a repository publishes many releases.                   | No       | -                                              |
 | `version_lag`            | Versions to stay behind latest (e.g. `1`).                                    | No       | `0`                                            |
 | `version_lag_depth`      | Lag depth: `major`, `minor`, or `patch`.                                      | No       | `minor`                                        |
 | `openai_base_url`        | OpenAI-compatible API base URL.                                               | No       | -                                              |
@@ -33,17 +33,17 @@ Requires `contents: write` and `pull-requests: write` on `GITHUB_TOKEN` unless
 | `max_releases`           | Max releases to fetch/analyze.                                                | No       | `Infinity`                                     |
 | `include_prereleases`    | Include prerelease versions.                                                  | No       | `false`                                        |
 | `config_file`            | Path to app list for `manual` updates and dead-app cleanup.                   | No       | `versions-config.yaml`                         |
-| `dry_run`                | Log only; skip git operations and PR creation.                                | No       | `false`                                        |
+| `dry_run`                | Log only; skip Git operations and PR creation.                                | No       | `false`                                        |
 | `git_user_name`          | Git commit author name.                                                       | No       | `github-actions[bot]`                          |
 | `git_user_email`         | Git commit author email.                                                      | No       | `github-actions[bot]@users.noreply.github.com` |
 
 ## How I use it
 
 For a single app, call the action with `repo`, `type`, and `targets`. In my
-homelab GitOps repo I pair it with a `versions-config.yaml` and a scheduled
-workflow that matrixes over each application.
+homelab GitOps repository I pair it with a `versions-config.yaml` and a
+scheduled workflow that matrixes over each application.
 
-```
+```text
 homelab/
 ├── .github/workflows/update-versions.yaml
 ├── versions-config.yaml

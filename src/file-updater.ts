@@ -1,5 +1,5 @@
 import fs from 'fs'
-import yaml from 'js-yaml'
+import * as yaml from 'js-yaml'
 import { log } from './utils.js'
 
 function getLineIndent(line: string): number {
