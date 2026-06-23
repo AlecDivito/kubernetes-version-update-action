@@ -2,27 +2,90 @@
 
 ![Code coverage](./badges/coverage.svg)
 
-A GitHub Action that automatically updates application versions in YAML files
-(Kubernetes manifests or Helm charts) and creates Pull Requests with an
-AI-powered risk assessment.
+Updates application versions in YAML files (Kubernetes manifests or Helm charts)
+and opens Pull Requests with an optional AI-powered risk assessment. One
+application per invocation. No cluster access required.
 
-## Usage
+Blog post:
+[Keeping my Homelab up to date without losing my mind](https://alecdivito.com/keeping-my-homelab-up-to-date-without-losing-my-mind/).
 
-This action is designed to be run for a single application at a time. To update
-multiple applications, you can use a workflow with a matrix or a loop.
+## Inputs
 
-### Example Workflow
+Requires `contents: write` and `pull-requests: write` on `GITHUB_TOKEN` unless
+`dry_run` is `true`.
 
-This example shows how to read a `versions-config.yaml` file and loop through
-the applications using a GitHub Actions matrix. This approach uses a small
-Node.js script to ensure robust parsing.
+| Name                     | Description                                                                           | Required | Default                                        |
+| ------------------------ | ------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
+| `github_token`           | GitHub token for API requests and Git operations.                                     | Yes      | `${{ github.token }}`                          |
+| `repo`                   | Upstream repository or image name (e.g. `owner/repo`).                                | Yes      | -                                              |
+| `type`                   | `kubernetes` (image tag), `helm` (chart revision), or `manual` (config only). | Yes      | `kubernetes`                                   |
+| `source`                 | Version source: `github` or `dockerhub`.                                              | No       | `github`                                       |
+| `targets`                | JSON array of `{ "file", "path" }` to update (not used for `manual`).                 | No       | -                                              |
+| `version`                | Current version (required for `manual`).                                              | No       | -                                              |
+| `description`            | Upgrade context for AI analysis and manual PR bodies.                                   | No       | -                                              |
+| `release_filter`         | Substring filter when a repo publishes many releases.                                 | No       | -                                              |
+| `version_lag`            | Versions to stay behind latest (e.g. `1`).                                            | No       | `0`                                            |
+| `version_lag_depth`      | Lag depth: `major`, `minor`, or `patch`.                                              | No       | `minor`                                        |
+| `openai_base_url`        | OpenAI-compatible API base URL.                                                       | No       | -                                              |
+| `openai_model`           | Model name.                                                                           | No       | -                                              |
+| `openai_api_key`         | API key.                                                                              | No       | -                                              |
+| `openai_max_note_length` | Max release-note length before chunking for AI.                                       | No       | `15000`                                        |
+| `max_releases`           | Max releases to fetch/analyze.                                                        | No       | `Infinity`                                     |
+| `include_prereleases`    | Include prerelease versions.                                                          | No       | `false`                                        |
+| `config_file`            | Path to app list for `manual` updates and dead-app cleanup.                           | No       | `versions-config.yaml`                         |
+| `dry_run`                | Log only; skip git operations and PR creation.                                        | No       | `false`                                        |
+| `git_user_name`          | Git commit author name.                                                               | No       | `github-actions[bot]`                          |
+| `git_user_email`         | Git commit author email.                                                              | No       | `github-actions[bot]@users.noreply.github.com` |
+
+## How I use it
+
+For a single app, call the action with `repo`, `type`, and `targets`. In my
+homelab GitOps repo I pair it with a `versions-config.yaml` and a scheduled
+workflow that matrixes over each application.
+
+```
+homelab/
+├── .github/workflows/update-versions.yaml
+├── versions-config.yaml
+├── apps/templates/          # ArgoCD Applications, Helm revisions
+└── services/                # Deployments, image tags
+```
+
+`versions-config.yaml`:
+
+```yaml
+applications:
+  - repo: 'traefik/traefik-helm-chart'
+    type: 'helm'
+    file: 'apps/templates/traefik.yaml'
+    path: 'spec.source.targetRevision'
+
+  - repo: 'busybox'
+    source: 'dockerhub'
+    type: 'kubernetes'
+    targets:
+      - file: 'services/adguard/deployment.yaml'
+        path: 'spec.template.spec.initContainers.0.image'
+      - file: 'services/vpn/wg-portal/deployment.yaml'
+        path: 'spec.template.spec.initContainers.0.image'
+
+  - repo: 'argoproj/argo-cd'
+    type: 'manual'
+    version: '2.10.1'
+    description: |
+      ArgoCD is managed via a manual install script. When upgrading:
+      1. Run 'kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v{{version}}/manifests/install.yaml'
+      2. Verify all pods are running.
+```
+
+`.github/workflows/update-versions.yaml`:
 
 ```yaml
 name: Update Versions
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Run daily
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -33,7 +96,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: set-matrix
-        name: Generate Matrix
         run: |
           npm install js-yaml
           node -e "
@@ -41,16 +103,10 @@ jobs:
           const yaml = require('js-yaml');
           const config = yaml.load(fs.readFileSync('versions-config.yaml', 'utf8'));
           const matrix = {
-            include: config.applications.map(app => {
-              const targets = app.targets || (app.file && app.path
-                ? [{file: app.file, path: app.path}]
-                : []
-              );
-              return {
-                ...app,
-                targets: targets.length > 0 ? JSON.stringify(targets) : ''
-              };
-            })
+            include: config.applications.map(app => ({
+              ...app,
+              targets: app.targets ? JSON.stringify(app.targets) : ''
+            }))
           };
           console.log('matrix=' + JSON.stringify(matrix));
           " >> $GITHUB_OUTPUT
@@ -64,8 +120,7 @@ jobs:
       matrix: ${{ fromJson(needs.list-apps.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Update ${{ matrix.repo }}
-        uses: ./ # Path to this action
+      - uses: alecdivito/kubernetes-version-update-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ matrix.repo }}
@@ -76,78 +131,17 @@ jobs:
           description: ${{ matrix.description }}
           release_filter: ${{ matrix.releaseFilter }}
           version_lag: ${{ matrix.versionLag || 0 }}
-          openai_base_url: ${{ secrets.OPENAI_BASE_URL }}
-          openai_model: ${{ secrets.OPENAI_MODEL }}
+          version_lag_depth: ${{ matrix.versionLagDepth || 'minor' }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          openai_max_note_length: ${{ matrix.openai_max_note_length || 15000 }}
+          openai_model: ${{ secrets.OPENAI_MODEL }}
           config_file: 'versions-config.yaml'
 ```
 
-### Configuration (`versions-config.yaml`)
-
-```yaml
-applications:
-  - repo: 'traefik/traefik-helm-chart'
-    type: 'helm'
-    file: 'apps/templates/public-ingress.yaml'
-    path: 'spec.source.targetRevision'
-  - repo: 'busybox'
-    source: 'dockerhub'
-    type: 'kubernetes'
-    targets:
-      - file: 'services/adguard/deployment.yaml'
-        path: 'spec.template.spec.initContainers.0.image'
-      - file: 'services/vpn/wg-portal/deployment.yaml'
-        path: 'spec.template.spec.initContainers.0.image'
-  - repo: 'argoproj/argo-cd'
-    type: 'manual'
-    version: '2.10.1'
-    description: |
-      ArgoCD is managed via a manual install script. When upgrading:
-      1. Run 'kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v{{version}}/manifests/install.yaml'
-      2. Verify all pods are running.
-  - repo: 'longhorn/longhorn'
-    type: 'kubernetes'
-    versionLag: 1 # Stay one version behind
-    versionLagDepth: 'minor' # 'major', 'minor', or 'patch' (default: minor)
-    targets:
-      - file: 'services/longhorn/deployment.yaml'
-        path: 'spec.template.spec.containers.0.image'
-```
-
-## Inputs
-
-| Name                     | Description                                                                           | Required | Default                                        |
-| ------------------------ | ------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
-| `github_token`           | GitHub token for API requests and Git operations.                                     | Yes      | `${{ github.token }}`                          |
-| `repo`                   | Repository where the application source or image is located (e.g., owner/repository). | Yes      | -                                              |
-| `type`                   | Type of update (`kubernetes`, `helm`, or `manual`).                                   | Yes      | `kubernetes`                                   |
-| `source`                 | Source of version information (`github` or `dockerhub`).                              | Yes      | `github`                                       |
-| `targets`                | JSON array of target files and paths to update (Optional for `manual`).               | No       | -                                              |
-| `version`                | Current version of the application (Required for `manual`).                           | No       | -                                              |
-| `description`            | AI context/instructions for the application upgrade process.                          | No       | -                                              |
-| `release_filter`         | Optional filter for releases.                                                         | No       | -                                              |
-| `openai_base_url`        | Base URL for OpenAI API.                                                              | No       | -                                              |
-| `openai_model`           | Model name for OpenAI API.                                                            | No       | -                                              |
-| `openai_api_key`         | API key for OpenAI.                                                                   | No       | -                                              |
-| `openai_max_note_length` | Maximum length of release notes before chunking for AI analysis.                      | No       | `15000`                                        |
-| `max_releases`           | Maximum number of releases to analyze.                                                | No       | `Infinity`                                     |
-| `dry_run`                | If `true`, only log changes and do not perform Git operations or PR creation.         | No       | `false`                                        |
-| `git_user_name`          | Name of the Git user for commits.                                                     | No       | `github-actions[bot]`                          |
-| `git_user_email`         | Email of the Git user for commits.                                                    | No       | `github-actions[bot]@users.noreply.github.com` |
-| `config_file`            | Path to the configuration file (e.g., `versions-config.yaml`).                        | No       | `versions-config.yaml`                         |
-| `include_prereleases`    | Whether to include prerelease versions in updates.                                    | No       | `false`                                        |
-| `version_lag`            | Number of versions to lag behind (e.g. 1 means stay on previous version).             | No       | `0`                                            |
-| `version_lag_depth`      | Depth of versioning to apply lag to (`major`, `minor`, or `patch`).                   | No       | `minor`                                        |
+Config fields use camelCase; map them to [inputs](#inputs) in the workflow
+(e.g. `versionLag` → `version_lag`). More examples (Immich version lag,
+cloudnative-pg filtering) are in the [blog post](https://alecdivito.com/keeping-my-homelab-up-to-date-without-losing-my-mind/).
 
 ## Local Development & Testing
-
-You can test this action locally without pushing to GitHub by simulating the
-environment variables that GitHub Actions uses.
-
-### 1. Setup Environment
-
-Create a `.env` file in the root directory:
 
 ```bash
 # .env
@@ -157,52 +151,13 @@ INPUT_TYPE="helm"
 INPUT_SOURCE="github"
 INPUT_TARGETS='[{"file": "__assets__/test-manifest.yaml", "path": "spec.source.targetRevision"}]'
 INPUT_DRY_RUN="true"
-
-# For manual app testing:
-# INPUT_TYPE="manual"
-# INPUT_VERSION="1.0.0"
-# INPUT_REPO="argoproj/argo-cd"
-# INPUT_DESCRIPTION="Manual upgrade context..."
-
-# Required for PR simulation logic
 GITHUB_REPOSITORY="your-user/your-repo"
-
-# Optional: AI testing
-# INPUT_OPENAI_BASE_URL="https://api.openai.com/v1"
-# INPUT_OPENAI_MODEL="gpt-4o"
-# INPUT_OPENAI_API_KEY="your_key"
 ```
-
-### 2. Prepare Test Files
-
-Create a dummy YAML file matching your `INPUT_TARGETS`:
-
-```yaml
-# test-manifest.yaml
-spec:
-  source:
-    targetRevision: 26.0.0
-```
-
-### 3. Run the Action
-
-Since you are using Node 22, you can use the built-in `--env-file` flag to load
-your `.env` variables.
 
 ```bash
-# 1. Build the action to bundle everything
 npm run package
-
-# 2. Run the bundled code with your environment variables
 node --env-file=.env dist/index.js
 ```
 
-### Common Issues
-
-- **Missing GITHUB_REPOSITORY**: Ensure `GITHUB_REPOSITORY="owner/repo"` is in
-  your `.env`. The action needs this to know where it's running.
-- **JSON Parsing Error**: If `INPUT_TARGETS` fails to parse, ensure it is
-  wrapped in single quotes in your shell or `.env` file to protect the double
-  quotes inside.
-- **Permissions**: Ensure your `GITHUB_TOKEN` has `contents: write` and
-  `pull-requests: write` permissions if you turn off dry run.
+**Common issues:** set `GITHUB_REPOSITORY`; quote `INPUT_TARGETS` in `.env`;
+grant `contents: write` and `pull-requests: write` when not in dry run.
