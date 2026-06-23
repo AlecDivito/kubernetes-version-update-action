@@ -80,7 +80,11 @@ export function findLineIndexForYamlPath(
   return findSegment(0, 0, -1)
 }
 
-function updateLineValue(line: string, key: string, replaceVal: string): string {
+function updateLineValue(
+  line: string,
+  key: string,
+  replaceVal: string
+): string {
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const regex = new RegExp(
     `^(\\s*(?:-\\s*)?${escapedKey}:\\s*)(.+?)(\\s*(?:#.*)?)$`

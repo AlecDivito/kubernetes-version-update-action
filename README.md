@@ -14,28 +14,28 @@ Blog post:
 Requires `contents: write` and `pull-requests: write` on `GITHUB_TOKEN` unless
 `dry_run` is `true`.
 
-| Name                     | Description                                                                           | Required | Default                                        |
-| ------------------------ | ------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
-| `github_token`           | GitHub token for API requests and Git operations.                                     | Yes      | `${{ github.token }}`                          |
-| `repo`                   | Upstream repository or image name (e.g. `owner/repo`).                                | Yes      | -                                              |
+| Name                     | Description                                                                   | Required | Default                                        |
+| ------------------------ | ----------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
+| `github_token`           | GitHub token for API requests and Git operations.                             | Yes      | `${{ github.token }}`                          |
+| `repo`                   | Upstream repository or image name (e.g. `owner/repo`).                        | Yes      | -                                              |
 | `type`                   | `kubernetes` (image tag), `helm` (chart revision), or `manual` (config only). | Yes      | `kubernetes`                                   |
-| `source`                 | Version source: `github` or `dockerhub`.                                              | No       | `github`                                       |
-| `targets`                | JSON array of `{ "file", "path" }` to update (not used for `manual`).                 | No       | -                                              |
-| `version`                | Current version (required for `manual`).                                              | No       | -                                              |
-| `description`            | Upgrade context for AI analysis and manual PR bodies.                                   | No       | -                                              |
-| `release_filter`         | Substring filter when a repo publishes many releases.                                 | No       | -                                              |
-| `version_lag`            | Versions to stay behind latest (e.g. `1`).                                            | No       | `0`                                            |
-| `version_lag_depth`      | Lag depth: `major`, `minor`, or `patch`.                                              | No       | `minor`                                        |
-| `openai_base_url`        | OpenAI-compatible API base URL.                                                       | No       | -                                              |
-| `openai_model`           | Model name.                                                                           | No       | -                                              |
-| `openai_api_key`         | API key.                                                                              | No       | -                                              |
-| `openai_max_note_length` | Max release-note length before chunking for AI.                                       | No       | `15000`                                        |
-| `max_releases`           | Max releases to fetch/analyze.                                                        | No       | `Infinity`                                     |
-| `include_prereleases`    | Include prerelease versions.                                                          | No       | `false`                                        |
-| `config_file`            | Path to app list for `manual` updates and dead-app cleanup.                           | No       | `versions-config.yaml`                         |
-| `dry_run`                | Log only; skip git operations and PR creation.                                        | No       | `false`                                        |
-| `git_user_name`          | Git commit author name.                                                               | No       | `github-actions[bot]`                          |
-| `git_user_email`         | Git commit author email.                                                              | No       | `github-actions[bot]@users.noreply.github.com` |
+| `source`                 | Version source: `github` or `dockerhub`.                                      | No       | `github`                                       |
+| `targets`                | JSON array of `{ "file", "path" }` to update (not used for `manual`).         | No       | -                                              |
+| `version`                | Current version (required for `manual`).                                      | No       | -                                              |
+| `description`            | Upgrade context for AI analysis and manual PR bodies.                         | No       | -                                              |
+| `release_filter`         | Substring filter when a repo publishes many releases.                         | No       | -                                              |
+| `version_lag`            | Versions to stay behind latest (e.g. `1`).                                    | No       | `0`                                            |
+| `version_lag_depth`      | Lag depth: `major`, `minor`, or `patch`.                                      | No       | `minor`                                        |
+| `openai_base_url`        | OpenAI-compatible API base URL.                                               | No       | -                                              |
+| `openai_model`           | Model name.                                                                   | No       | -                                              |
+| `openai_api_key`         | API key.                                                                      | No       | -                                              |
+| `openai_max_note_length` | Max release-note length before chunking for AI.                               | No       | `15000`                                        |
+| `max_releases`           | Max releases to fetch/analyze.                                                | No       | `Infinity`                                     |
+| `include_prereleases`    | Include prerelease versions.                                                  | No       | `false`                                        |
+| `config_file`            | Path to app list for `manual` updates and dead-app cleanup.                   | No       | `versions-config.yaml`                         |
+| `dry_run`                | Log only; skip git operations and PR creation.                                | No       | `false`                                        |
+| `git_user_name`          | Git commit author name.                                                       | No       | `github-actions[bot]`                          |
+| `git_user_email`         | Git commit author email.                                                      | No       | `github-actions[bot]@users.noreply.github.com` |
 
 ## How I use it
 
@@ -137,9 +137,16 @@ jobs:
           config_file: 'versions-config.yaml'
 ```
 
-Config fields use camelCase; map them to [inputs](#inputs) in the workflow
-(e.g. `versionLag` → `version_lag`). More examples (Immich version lag,
-cloudnative-pg filtering) are in the [blog post](https://alecdivito.com/keeping-my-homelab-up-to-date-without-losing-my-mind/).
+Config fields use camelCase; map them to [inputs](#inputs) in the workflow (e.g.
+`versionLag` → `version_lag`). More examples (Immich version lag, cloudnative-pg
+filtering) are in the
+[blog post](https://alecdivito.com/keeping-my-homelab-up-to-date-without-losing-my-mind/).
+
+## Contributing
+
+Please remember to run `npm run all` before creating a pull request.
+
+Issues are welcome.
 
 ## Testing
 
