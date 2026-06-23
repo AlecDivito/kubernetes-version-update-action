@@ -141,23 +141,67 @@ Config fields use camelCase; map them to [inputs](#inputs) in the workflow
 (e.g. `versionLag` → `version_lag`). More examples (Immich version lag,
 cloudnative-pg filtering) are in the [blog post](https://alecdivito.com/keeping-my-homelab-up-to-date-without-losing-my-mind/).
 
-## Local Development & Testing
+## Testing
+
+You can test this action locally without pushing to GitHub by simulating the
+environment variables that GitHub Actions uses.
+
+### 1. Setup Environment
+
+Create a `.env` file in the root directory:
 
 ```bash
 # .env
 INPUT_GITHUB_TOKEN="your_personal_access_token"
-INPUT_REPO="traefik/traefik-helm-chart"
-INPUT_TYPE="helm"
 INPUT_SOURCE="github"
 INPUT_TARGETS='[{"file": "__assets__/test-manifest.yaml", "path": "spec.source.targetRevision"}]'
 INPUT_DRY_RUN="true"
+
+# For manual app testing:
+# INPUT_TYPE="manual"
+# INPUT_VERSION="1.0.0"
+# INPUT_REPO="argoproj/argo-cd"
+# INPUT_DESCRIPTION="Manual upgrade context..."
+
+# Required for PR simulation logic
 GITHUB_REPOSITORY="your-user/your-repo"
+
+# Optional: AI testing
+# INPUT_OPENAI_BASE_URL="https://api.openai.com/v1"
+# INPUT_OPENAI_MODEL="gpt-4o"
+# INPUT_OPENAI_API_KEY="your_key"
 ```
 
+### 2. Prepare Test Files
+
+Create a dummy YAML file matching your `INPUT_TARGETS`:
+
+```yaml
+# test-manifest.yaml
+spec:
+  source:
+    targetRevision: 26.0.0
+```
+
+### 3. Run the Action
+
+Since you are using Node 22, you can use the built-in `--env-file` flag to load
+your `.env` variables.
+
 ```bash
+# 1. Build the action to bundle everything
 npm run package
+
+# 2. Run the bundled code with your environment variables
 node --env-file=.env dist/index.js
 ```
 
-**Common issues:** set `GITHUB_REPOSITORY`; quote `INPUT_TARGETS` in `.env`;
-grant `contents: write` and `pull-requests: write` when not in dry run.
+### Common Issues
+
+- **Missing GITHUB_REPOSITORY**: Ensure `GITHUB_REPOSITORY="owner/repo"` is in
+  your `.env`. The action needs this to know where it's running.
+- **JSON Parsing Error**: If `INPUT_TARGETS` fails to parse, ensure it is
+  wrapped in single quotes in your shell or `.env` file to protect the double
+  quotes inside.
+- **Permissions**: Ensure your `GITHUB_TOKEN` has `contents: write` and
+  `pull-requests: write` permissions if you turn off dry run.
