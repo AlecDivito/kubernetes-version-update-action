@@ -38,7 +38,7 @@ export function applyVersionLag(
     const requiredLength = depth === 'major' ? 1 : depth === 'minor' ? 2 : 3
 
     if (parts.length >= requiredLength) {
-      let group = ''
+      let group
       if (depth === 'major') {
         group = parts[0]
       } else if (depth === 'minor') {
@@ -187,7 +187,7 @@ export function generatePrBody(
   logBuffer: string,
   maxBodySize: number = 65000
 ): string {
-  let prBody = ''
+  let prBody
   let includeLogs = true
   let aiDescriptionsLimit = aiAssessment ? aiAssessment.releases.length : 0
 
