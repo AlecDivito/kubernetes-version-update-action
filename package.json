@@ -42,7 +42,7 @@
     "@actions/github": "^9.1.1",
     "js-yaml": "5.1.0",
     "octokit": "^5.0.5",
-    "openai": "6.44.0",
+    "openai": "6.45.0",
     "shelljs": "0.10.0"
   },
   "devDependencies": {
