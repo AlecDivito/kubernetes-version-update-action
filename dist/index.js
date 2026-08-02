@@ -34064,7 +34064,7 @@ const safeJSON = (text) => {
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const VERSION = '6.44.0'; // x-release-please-version
+const VERSION = '7.1.0'; // x-release-please-version
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 const isRunningInBrowser = () => {
@@ -34886,6 +34886,7 @@ const formatRequestDetails = (details) => {
             (name.toLowerCase() === 'authorization' ||
                 name.toLowerCase() === 'api-key' ||
                 name.toLowerCase() === 'x-api-key' ||
+                name.toLowerCase() === 'x-amz-security-token' ||
                 name.toLowerCase() === 'cookie' ||
                 name.toLowerCase() === 'set-cookie') ?
                 '***'
@@ -34982,14 +34983,46 @@ class Stream {
         let consumed = false;
         async function* iterLines() {
             const lineDecoder = new LineDecoder();
-            const iter = ReadableStreamToAsyncIterable(readableStream);
-            for await (const chunk of iter) {
-                for (const line of lineDecoder.decode(chunk)) {
+            const reader = readableStream.getReader();
+            let closed = false;
+            let cancelPromise;
+            const cancel = () => {
+                cancelPromise ?? (cancelPromise = reader.cancel());
+                cancelPromise.catch(() => { });
+            };
+            controller.signal.addEventListener('abort', cancel, { once: true });
+            try {
+                if (controller.signal.aborted) {
+                    cancel();
+                    return;
+                }
+                while (true) {
+                    const { value: chunk, done } = await reader.read();
+                    if (done) {
+                        closed = true;
+                        break;
+                    }
+                    if (controller.signal.aborted)
+                        return;
+                    for (const line of lineDecoder.decode(chunk)) {
+                        if (controller.signal.aborted)
+                            return;
+                        yield line;
+                    }
+                }
+                if (controller.signal.aborted)
+                    return;
+                for (const line of lineDecoder.flush()) {
+                    if (controller.signal.aborted)
+                        return;
                     yield line;
                 }
             }
-            for (const line of lineDecoder.flush()) {
-                yield line;
+            finally {
+                controller.signal.removeEventListener('abort', cancel);
+                if (!closed)
+                    cancel();
+                reader.releaseLock();
             }
         }
         async function* iterator() {
@@ -35009,7 +35042,7 @@ class Stream {
             }
             catch (e) {
                 // If the user calls `stream.controller.abort()`, we should exit without throwing.
-                if (isAbortError(e))
+                if (controller.signal.aborted || isAbortError(e))
                     return;
                 throw e;
             }
@@ -35542,14 +35575,22 @@ class WorkloadIdentityAuth {
             }
             throw APIError.generate(response.status, body, `Token exchange failed with status ${response.status}`, response.headers);
         }
-        const tokenResponse = (await response.json());
-        const expiresIn = tokenResponse.expires_in || 3600;
+        const tokenResponse = await response.json();
+        if (typeof tokenResponse !== 'object' ||
+            tokenResponse === null ||
+            !('access_token' in tokenResponse) ||
+            typeof tokenResponse.access_token !== 'string' ||
+            tokenResponse.access_token.trim().length === 0) {
+            throw new OpenAIError("Token exchange response missing 'access_token' field");
+        }
+        const accessToken = tokenResponse.access_token;
+        const expiresIn = tokenResponse.expires_in ?? 3600;
         const expiresAt = Date.now() + expiresIn * 1000;
         this.cachedToken = {
-            token: tokenResponse.access_token,
+            token: accessToken,
             expiresAt,
         };
-        return tokenResponse.access_token;
+        return accessToken;
     }
     isTokenExpired(cachedToken) {
         return Date.now() >= cachedToken.expiresAt;
@@ -35565,13 +35606,104 @@ class WorkloadIdentityAuth {
     }
 }
 
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+const brand_privateNullableHeaders = /* @__PURE__ */ Symbol('brand.privateNullableHeaders');
+const httpTokenHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+function* iterateHeaders(headers) {
+    if (!headers)
+        return;
+    if (brand_privateNullableHeaders in headers) {
+        const { values, nulls } = headers;
+        yield* values.entries();
+        for (const name of nulls) {
+            yield [name, null];
+        }
+        return;
+    }
+    let shouldClear = false;
+    let iter;
+    if (headers instanceof Headers) {
+        iter = headers.entries();
+    }
+    else if (isReadonlyArray(headers)) {
+        iter = headers;
+    }
+    else {
+        shouldClear = true;
+        iter = Object.entries(headers ?? {});
+    }
+    for (let row of iter) {
+        const name = row[0];
+        if (typeof name !== 'string')
+            throw new TypeError('expected header name to be a string');
+        const values = isReadonlyArray(row[1]) ? row[1] : [row[1]];
+        let didClear = false;
+        for (const value of values) {
+            if (value === undefined)
+                continue;
+            // Objects keys always overwrite older headers, they never append.
+            // Yield a null to clear the header before adding the new values.
+            if (shouldClear && !didClear) {
+                didClear = true;
+                yield [name, null];
+            }
+            yield [name, value];
+        }
+    }
+}
+const buildHeaders = (newHeaders) => {
+    const targetHeaders = new Headers();
+    const nullHeaders = new Set();
+    for (const headers of newHeaders) {
+        const seenHeaders = new Set();
+        for (const [name, value] of iterateHeaders(headers)) {
+            if (!httpTokenHeaderName.test(name)) {
+                throw new TypeError(`Header name must be a valid HTTP token ["${name}"]`);
+            }
+            const lowerName = name.toLowerCase();
+            if (!seenHeaders.has(lowerName)) {
+                targetHeaders.delete(lowerName);
+                seenHeaders.add(lowerName);
+            }
+            if (value === null) {
+                targetHeaders.delete(lowerName);
+                nullHeaders.add(lowerName);
+            }
+            else {
+                targetHeaders.append(lowerName, value);
+                nullHeaders.delete(lowerName);
+            }
+        }
+    }
+    return { [brand_privateNullableHeaders]: true, values: targetHeaders, nulls: nullHeaders };
+};
+
+const brand_privateStreamingFile = /* @__PURE__ */ Symbol('brand.privateStreamingFile');
+/**
+ * Wrap a stream as an uploadable file without reading it into memory.
+ *
+ * Unlike {@link toFile}, this helper does not create a web `File`, because the `File` constructor
+ * must consume all of its contents up front. The stream is instead encoded lazily as multipart
+ * form data when the request is sent.
+ */
+function toStreamingFile(data, name, options) {
+    if (!name) {
+        throw new TypeError('toStreamingFile requires a non-empty file name');
+    }
+    return {
+        [brand_privateStreamingFile]: true,
+        data,
+        name,
+        ...(options?.type ? { type: options.type } : {}),
+    };
+}
 const checkFileSupport = () => {
     if (typeof File === 'undefined') {
         const { process } = globalThis;
         const isOldNode = typeof process?.versions?.node === 'string' && parseInt(process.versions.node.split('.')) < 20;
         throw new Error('`File` is not defined as a global, which is required for file uploads.' +
             (isOldNode ?
-                " Update to Node 20 LTS or newer, or set `globalThis.File` to `import('node:buffer').File`."
+                " Update to a supported Node.js LTS release, or set `globalThis.File` to `import('node:buffer').File`."
                 : ''));
     }
 };
@@ -35602,9 +35734,15 @@ const isAsyncIterable = (value) => value != null && typeof value === 'object' &&
 const maybeMultipartFormRequestOptions = async (opts, fetch) => {
     if (!hasUploadableValue(opts.body))
         return opts;
+    if (hasStreamingUploadableValue(opts.body)) {
+        return createStreamingFormRequestOptions(opts);
+    }
     return { ...opts, body: await createForm(opts.body, fetch) };
 };
 const multipartFormRequestOptions = async (opts, fetch) => {
+    if (hasStreamingUploadableValue(opts.body)) {
+        return createStreamingFormRequestOptions(opts);
+    }
     return { ...opts, body: await createForm(opts.body, fetch) };
 };
 const supportsFormDataMap = /* @__PURE__ */ new WeakMap();
@@ -35649,9 +35787,31 @@ const createForm = async (body, fetch) => {
 // We check for Blob not File because Bun.File doesn't inherit from File,
 // but they both inherit from Blob and have a `name` property at runtime.
 const isNamedBlob = (value) => value instanceof Blob && 'name' in value;
+const isReadableStream = (value) => typeof value === 'object' &&
+    value !== null &&
+    'getReader' in value &&
+    typeof value.getReader === 'function';
+const isStreamingFile = (value) => typeof value === 'object' && value !== null && brand_privateStreamingFile in value;
 const isUploadable = (value) => typeof value === 'object' &&
     value !== null &&
-    (value instanceof Response || isAsyncIterable(value) || isNamedBlob(value));
+    (value instanceof Response ||
+        isAsyncIterable(value) ||
+        isReadableStream(value) ||
+        isStreamingFile(value) ||
+        isNamedBlob(value));
+const hasStreamingUploadableValue = (value) => {
+    if (isStreamingFile(value) || isAsyncIterable(value) || isReadableStream(value))
+        return true;
+    if (Array.isArray(value))
+        return value.some(hasStreamingUploadableValue);
+    if (value && typeof value === 'object' && !isNamedBlob(value) && !(value instanceof Response)) {
+        for (const k in value) {
+            if (hasStreamingUploadableValue(value[k]))
+                return true;
+        }
+    }
+    return false;
+};
 const hasUploadableValue = (value) => {
     if (isUploadable(value))
         return true;
@@ -35665,6 +35825,124 @@ const hasUploadableValue = (value) => {
     }
     return false;
 };
+const createStreamingFormRequestOptions = (opts) => {
+    const boundary = `openai-${Math.random().toString(36).slice(2)}`;
+    const body = ReadableStreamFrom(iterateMultipartBody(opts.body, boundary));
+    return {
+        ...opts,
+        body,
+        headers: buildHeaders([{ 'content-type': `multipart/form-data; boundary=${boundary}` }, opts.headers]),
+    };
+};
+async function* iterateMultipartBody(body, boundary) {
+    for await (const { key, value } of iterateFormEntries(body)) {
+        yield encodeUTF8(`--${boundary}\r\n`);
+        if (isUploadable(value)) {
+            const filename = getStreamingFileName(value);
+            const type = getStreamingFileType(value);
+            yield encodeUTF8(`Content-Disposition: form-data; name="${escapeHeaderValue(key)}"; filename="${escapeHeaderValue(filename)}"\r\n` + `Content-Type: ${type}\r\n\r\n`);
+            yield* iterateBytes(getStreamingFileData(value));
+        }
+        else {
+            yield encodeUTF8(`Content-Disposition: form-data; name="${escapeHeaderValue(key)}"\r\n\r\n${String(value)}`);
+        }
+        yield encodeUTF8('\r\n');
+    }
+    yield encodeUTF8(`--${boundary}--\r\n`);
+}
+async function* iterateFormEntries(body) {
+    if (!body || typeof body !== 'object')
+        return;
+    for (const [key, value] of Object.entries(body)) {
+        yield* iterateFormValue(key, value);
+    }
+}
+async function* iterateFormValue(key, value) {
+    if (value === undefined)
+        return;
+    if (value == null) {
+        throw new TypeError(`Received null for "${key}"; to pass null in FormData, you must use the string 'null'`);
+    }
+    if (typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        isUploadable(value)) {
+        yield { key, value };
+    }
+    else if (Array.isArray(value)) {
+        for (const entry of value) {
+            yield* iterateFormValue(key + '[]', entry);
+        }
+    }
+    else if (typeof value === 'object') {
+        for (const [name, prop] of Object.entries(value)) {
+            yield* iterateFormValue(`${key}[${name}]`, prop);
+        }
+    }
+    else {
+        throw new TypeError(`Invalid value given to form, expected a string, number, boolean, object, Array, File or Blob but got ${value} instead`);
+    }
+}
+function getStreamingFileName(value) {
+    return isStreamingFile(value) ? value.name : getName(value) ?? 'unknown_file';
+}
+function getStreamingFileType(value) {
+    if (isStreamingFile(value))
+        return value.type || 'application/octet-stream';
+    if (isNamedBlob(value) && value.type)
+        return value.type;
+    if (value instanceof Response)
+        return value.headers.get('content-type') || 'application/octet-stream';
+    return 'application/octet-stream';
+}
+function getStreamingFileData(value) {
+    if (isStreamingFile(value))
+        return value.data;
+    return value;
+}
+async function* iterateBytes(value) {
+    if (typeof value === 'string') {
+        yield encodeUTF8(value);
+    }
+    else if (ArrayBuffer.isView(value)) {
+        yield new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    else if (value instanceof ArrayBuffer) {
+        yield new Uint8Array(value);
+    }
+    else if (value instanceof Response) {
+        if (value.body) {
+            yield* iterateBytes(value.body);
+        }
+        else {
+            yield* iterateBytes(await value.blob());
+        }
+    }
+    else if (value instanceof Blob) {
+        if (typeof value.stream === 'function') {
+            yield* iterateBytes(value.stream());
+        }
+        else {
+            yield new Uint8Array(await value.arrayBuffer());
+        }
+    }
+    else if (isReadableStream(value)) {
+        for await (const chunk of ReadableStreamToAsyncIterable(value)) {
+            yield* iterateBytes(chunk);
+        }
+    }
+    else if (isAsyncIterable(value)) {
+        for await (const chunk of value) {
+            yield* iterateBytes(chunk);
+        }
+    }
+    else {
+        throw new TypeError(`Invalid streaming file chunk: ${String(value)}`);
+    }
+}
+function escapeHeaderValue(value) {
+    return value.replace(/["\\\r\n]/g, (character) => encodeURIComponent(character));
+}
 const addFormValue = async (form, key, value) => {
     if (value === undefined)
         return;
@@ -36007,7 +36285,7 @@ const isToolMessage = (message) => {
     return message?.role === 'tool';
 };
 
-var _EventStream_instances, _EventStream_connectedPromise, _EventStream_resolveConnectedPromise, _EventStream_rejectConnectedPromise, _EventStream_endPromise, _EventStream_resolveEndPromise, _EventStream_rejectEndPromise, _EventStream_listeners, _EventStream_ended, _EventStream_errored, _EventStream_aborted, _EventStream_catchingPromiseCreated, _EventStream_handleError;
+var _EventStream_instances, _EventStream_connectedPromise, _EventStream_resolveConnectedPromise, _EventStream_rejectConnectedPromise, _EventStream_endPromise, _EventStream_resolveEndPromise, _EventStream_rejectEndPromise, _EventStream_listeners, _EventStream_abortListeners, _EventStream_ended, _EventStream_errored, _EventStream_aborted, _EventStream_catchingPromiseCreated, _EventStream_removeAbortListeners, _EventStream_handleError;
 class EventStream {
     constructor() {
         _EventStream_instances.add(this);
@@ -36019,6 +36297,7 @@ class EventStream {
         _EventStream_resolveEndPromise.set(this, () => { });
         _EventStream_rejectEndPromise.set(this, () => { });
         _EventStream_listeners.set(this, {});
+        _EventStream_abortListeners.set(this, []);
         _EventStream_ended.set(this, false);
         _EventStream_errored.set(this, false);
         _EventStream_aborted.set(this, false);
@@ -36042,8 +36321,16 @@ class EventStream {
         // Unfortunately if we call `executor()` immediately we get runtime errors about
         // references to `this` before the `super()` constructor call returns.
         setTimeout(() => {
-            executor().then(() => {
-                this._emitFinal();
+            Promise.resolve()
+                .then(executor)
+                .then(() => {
+                try {
+                    this._emitFinal();
+                }
+                catch (error) {
+                    __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_handleError).call(this, error);
+                    return;
+                }
                 this._emit('end');
             }, __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_handleError).bind(this));
         }, 0);
@@ -36065,6 +36352,17 @@ class EventStream {
     }
     abort() {
         this.controller.abort();
+    }
+    _listenForAbort(signal) {
+        if (!signal || this.ended)
+            return;
+        if (signal.aborted) {
+            this.controller.abort();
+            return;
+        }
+        const listener = () => this.controller.abort();
+        signal.addEventListener('abort', listener, { once: true });
+        __classPrivateFieldGet(this, _EventStream_abortListeners, "f").push({ signal, listener });
     }
     /**
      * Adds the listener function to the end of the listeners array for the event.
@@ -36123,6 +36421,103 @@ class EventStream {
             this.once(event, resolve);
         });
     }
+    /**
+     * Returns an async iterator that yields every time the event is triggered.
+     * The iterator ends when the stream ends and rejects if the stream errors
+     * or is aborted. If you request the 'error' or 'abort' event, the iterator
+     * yields that event instead of rejecting.
+     *
+     * Example:
+     *
+     *   for await (const [message] of stream.events('message')) {
+     *     await processMessage(message);
+     *   }
+     */
+    events(event) {
+        const pushQueue = [];
+        const readQueue = [];
+        let ended = this.ended;
+        let failure;
+        let failureDelivered = false;
+        const doneResult = () => ({ value: undefined, done: true });
+        const finishReaders = () => {
+            while (readQueue.length) {
+                readQueue.shift().resolve(doneResult());
+            }
+        };
+        const rejectReader = () => {
+            if (!failure || failureDelivered || !readQueue.length)
+                return;
+            failureDelivered = true;
+            readQueue.shift().reject(failure);
+        };
+        const cleanup = () => {
+            this.off(event, onEvent);
+            this.off('end', onEnd);
+            if (event !== 'error')
+                this.off('error', onFailure);
+            if (event !== 'abort')
+                this.off('abort', onFailure);
+        };
+        const onEvent = (...args) => {
+            if (ended)
+                return;
+            const reader = readQueue.shift();
+            if (reader) {
+                reader.resolve({ value: args, done: false });
+            }
+            else {
+                pushQueue.push(args);
+            }
+        };
+        const onFailure = (error) => {
+            failure = error;
+            if (!pushQueue.length)
+                rejectReader();
+        };
+        const onEnd = () => {
+            ended = true;
+            cleanup();
+            if (!pushQueue.length) {
+                rejectReader();
+                finishReaders();
+            }
+        };
+        if (!ended) {
+            this.on(event, onEvent);
+            this.on('end', onEnd);
+            if (event !== 'error')
+                this.on('error', onFailure);
+            if (event !== 'abort')
+                this.on('abort', onFailure);
+        }
+        return {
+            next: () => {
+                const value = pushQueue.shift();
+                if (value)
+                    return Promise.resolve({ value, done: false });
+                if (failure && !failureDelivered) {
+                    failureDelivered = true;
+                    return Promise.reject(failure);
+                }
+                if (ended)
+                    return Promise.resolve(doneResult());
+                return new Promise((resolve, reject) => {
+                    readQueue.push({ resolve, reject });
+                });
+            },
+            return: () => {
+                ended = true;
+                pushQueue.length = 0;
+                cleanup();
+                finishReaders();
+                return Promise.resolve(doneResult());
+            },
+            [Symbol.asyncIterator]() {
+                return this;
+            },
+        };
+    }
     async done() {
         __classPrivateFieldSet(this, _EventStream_catchingPromiseCreated, true);
         await __classPrivateFieldGet(this, _EventStream_endPromise, "f");
@@ -36133,6 +36528,7 @@ class EventStream {
             return;
         }
         if (event === 'end') {
+            __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_removeAbortListeners).call(this);
             __classPrivateFieldSet(this, _EventStream_ended, true);
             __classPrivateFieldGet(this, _EventStream_resolveEndPromise, "f").call(this);
         }
@@ -36170,7 +36566,11 @@ class EventStream {
     }
     _emitFinal() { }
 }
-_EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedPromise = new WeakMap(), _EventStream_rejectConnectedPromise = new WeakMap(), _EventStream_endPromise = new WeakMap(), _EventStream_resolveEndPromise = new WeakMap(), _EventStream_rejectEndPromise = new WeakMap(), _EventStream_listeners = new WeakMap(), _EventStream_ended = new WeakMap(), _EventStream_errored = new WeakMap(), _EventStream_aborted = new WeakMap(), _EventStream_catchingPromiseCreated = new WeakMap(), _EventStream_instances = new WeakSet(), _EventStream_handleError = function _EventStream_handleError(error) {
+_EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedPromise = new WeakMap(), _EventStream_rejectConnectedPromise = new WeakMap(), _EventStream_endPromise = new WeakMap(), _EventStream_resolveEndPromise = new WeakMap(), _EventStream_rejectEndPromise = new WeakMap(), _EventStream_listeners = new WeakMap(), _EventStream_abortListeners = new WeakMap(), _EventStream_ended = new WeakMap(), _EventStream_errored = new WeakMap(), _EventStream_aborted = new WeakMap(), _EventStream_catchingPromiseCreated = new WeakMap(), _EventStream_instances = new WeakSet(), _EventStream_removeAbortListeners = function _EventStream_removeAbortListeners() {
+    for (const { signal, listener } of __classPrivateFieldGet(this, _EventStream_abortListeners, "f").splice(0)) {
+        signal.removeEventListener('abort', listener);
+    }
+}, _EventStream_handleError = function _EventStream_handleError(error) {
     __classPrivateFieldSet(this, _EventStream_errored, true);
     if (error instanceof Error && error.name === 'AbortError') {
         error = new APIUserAbortError();
@@ -36197,6 +36597,60 @@ function isRunnableFunctionWithParse(fn) {
 
 var _AbstractChatCompletionRunner_instances, _AbstractChatCompletionRunner_getFinalContent, _AbstractChatCompletionRunner_getFinalMessage, _AbstractChatCompletionRunner_getFinalFunctionToolCall, _AbstractChatCompletionRunner_getFinalFunctionToolCallResult, _AbstractChatCompletionRunner_calculateTotalUsage, _AbstractChatCompletionRunner_validateParams, _AbstractChatCompletionRunner_stringifyFunctionCallResult;
 const DEFAULT_MAX_CHAT_COMPLETIONS = 10;
+function normalizeToolCallIds(chatCompletion) {
+    for (const choice of chatCompletion.choices) {
+        for (const toolCall of choice.message.tool_calls ?? []) {
+            // Some OpenAI-compatible providers omit tool call IDs or return an empty string.
+            // Generate a unique ID before the completion is stored or emitted so the assistant
+            // tool call and its result message always reference the same value.
+            if (!toolCall.id) {
+                toolCall.id = `call_${uuid4()}`;
+            }
+        }
+    }
+}
+/**
+ * Parsed completions contain response-only and helper-only fields. Keep those
+ * on runner.messages for callers, but only replay valid request fields.
+ */
+function toRequestMessage(message) {
+    if (!isAssistantMessage(message))
+        return message;
+    const requestMessage = { role: 'assistant' };
+    if (message.audio != null)
+        requestMessage.audio = { id: message.audio.id };
+    if (message.content !== undefined)
+        requestMessage.content = message.content;
+    if (message.function_call != null)
+        requestMessage.function_call = message.function_call;
+    if (message.name !== undefined)
+        requestMessage.name = message.name;
+    if (message.refusal != null)
+        requestMessage.refusal = message.refusal;
+    if (message.tool_calls !== undefined) {
+        requestMessage.tool_calls = message.tool_calls.map((toolCall) => {
+            if (toolCall.type === 'custom') {
+                return {
+                    id: toolCall.id,
+                    type: toolCall.type,
+                    custom: {
+                        input: toolCall.custom.input,
+                        name: toolCall.custom.name,
+                    },
+                };
+            }
+            return {
+                id: toolCall.id,
+                type: toolCall.type,
+                function: {
+                    arguments: toolCall.function.arguments,
+                    name: toolCall.function.name,
+                },
+            };
+        });
+    }
+    return requestMessage;
+}
 class AbstractChatCompletionRunner extends EventStream {
     constructor() {
         super(...arguments);
@@ -36205,6 +36659,7 @@ class AbstractChatCompletionRunner extends EventStream {
         this.messages = [];
     }
     _addChatCompletion(chatCompletion) {
+        normalizeToolCallIds(chatCompletion);
         this._chatCompletions.push(chatCompletion);
         this._emit('chatCompletion', chatCompletion);
         const message = chatCompletion.choices[0]?.message;
@@ -36251,7 +36706,7 @@ class AbstractChatCompletionRunner extends EventStream {
         return __classPrivateFieldGet(this, _AbstractChatCompletionRunner_instances, "m", _AbstractChatCompletionRunner_getFinalContent).call(this);
     }
     /**
-     * @returns a promise that resolves with the the final assistant ChatCompletionMessage response,
+     * @returns a promise that resolves with the final assistant ChatCompletionMessage response,
      * or rejects if an error occurred or the stream ended prematurely without producing a ChatCompletionMessage.
      */
     async finalMessage() {
@@ -36298,12 +36753,7 @@ class AbstractChatCompletionRunner extends EventStream {
         }
     }
     async _createChatCompletion(client, params, options) {
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         __classPrivateFieldGet(this, _AbstractChatCompletionRunner_instances, "m", _AbstractChatCompletionRunner_validateParams).call(this, params);
         const chatCompletion = await client.chat.completions.create({ ...params, stream: false }, { ...options, signal: this.controller.signal });
         this._connected();
@@ -36315,11 +36765,12 @@ class AbstractChatCompletionRunner extends EventStream {
         }
         return await this._createChatCompletion(client, params, options);
     }
-    async _runTools(client, params, options) {
+    async _runTools(client, params, runner, options) {
         const role = 'tool';
-        const { tool_choice = 'auto', stream, ...restParams } = params;
+        const { tool_choice = 'auto', stream, toolContext: inputToolContext, ...restParams } = params;
+        const toolContext = inputToolContext;
         const singleFunctionToCall = typeof tool_choice !== 'string' && tool_choice.type === 'function' && tool_choice?.function?.name;
-        const { maxChatCompletions = DEFAULT_MAX_CHAT_COMPLETIONS } = options || {};
+        const { maxChatCompletions = DEFAULT_MAX_CHAT_COMPLETIONS, afterCompletion } = options || {};
         // TODO(someday): clean this logic up
         const inputTools = params.tools.map((tool) => {
             if (isAutoParsableTool$1(tool)) {
@@ -36362,55 +36813,83 @@ class AbstractChatCompletionRunner extends EventStream {
         for (const message of params.messages) {
             this._addMessage(message, false);
         }
+        const runToolCall = async (toolCall) => {
+            if (toolCall.type !== 'function')
+                return { message: undefined, functionCalled: false };
+            const tool_call_id = toolCall.id;
+            const { name, arguments: args } = toolCall.function;
+            const fn = functionsByName[name];
+            if (!fn) {
+                const content = `Invalid tool_call: ${JSON.stringify(name)}. Available options are: ${Object.keys(functionsByName)
+                    .map((name) => JSON.stringify(name))
+                    .join(', ')}. Please try again`;
+                return { message: { role, tool_call_id, content }, functionCalled: false };
+            }
+            if (singleFunctionToCall && singleFunctionToCall !== name) {
+                const content = `Invalid tool_call: ${JSON.stringify(name)}. ${JSON.stringify(singleFunctionToCall)} requested. Please try again`;
+                return { message: { role, tool_call_id, content }, functionCalled: false };
+            }
+            let rawContent;
+            if (isRunnableFunctionWithParse(fn)) {
+                let parsed;
+                try {
+                    parsed = await fn.parse(args);
+                }
+                catch (error) {
+                    const content = error instanceof Error ? error.message : String(error);
+                    return { message: { role, tool_call_id, content }, functionCalled: false };
+                }
+                rawContent = await fn.function(parsed, runner, toolContext);
+            }
+            else {
+                rawContent = await fn.function(args, runner, toolContext);
+            }
+            const content = __classPrivateFieldGet(this, _AbstractChatCompletionRunner_instances, "m", _AbstractChatCompletionRunner_stringifyFunctionCallResult).call(this, rawContent);
+            return { message: { role, tool_call_id, content }, functionCalled: true };
+        };
         for (let i = 0; i < maxChatCompletions; ++i) {
             const chatCompletion = await this._createChatCompletion(client, {
                 ...restParams,
                 tool_choice,
                 tools,
-                messages: [...this.messages],
+                messages: this.messages.map(toRequestMessage),
             }, options);
             const message = chatCompletion.choices[0]?.message;
             if (!message) {
                 throw new OpenAIError(`missing message in ChatCompletion response`);
             }
             if (!message.tool_calls?.length) {
+                await afterCompletion?.(chatCompletion, runner);
                 return;
             }
-            for (const tool_call of message.tool_calls) {
-                if (tool_call.type !== 'function')
-                    continue;
-                const tool_call_id = tool_call.id;
-                const { name, arguments: args } = tool_call.function;
-                const fn = functionsByName[name];
-                if (!fn) {
-                    const content = `Invalid tool_call: ${JSON.stringify(name)}. Available options are: ${Object.keys(functionsByName)
-                        .map((name) => JSON.stringify(name))
-                        .join(', ')}. Please try again`;
-                    this._addMessage({ role, tool_call_id, content });
-                    continue;
-                }
-                else if (singleFunctionToCall && singleFunctionToCall !== name) {
-                    const content = `Invalid tool_call: ${JSON.stringify(name)}. ${JSON.stringify(singleFunctionToCall)} requested. Please try again`;
-                    this._addMessage({ role, tool_call_id, content });
-                    continue;
-                }
-                let parsed;
-                try {
-                    parsed = isRunnableFunctionWithParse(fn) ? await fn.parse(args) : args;
-                }
-                catch (error) {
-                    const content = error instanceof Error ? error.message : String(error);
-                    this._addMessage({ role, tool_call_id, content });
-                    continue;
-                }
-                // @ts-expect-error it can't rule out `never` type.
-                const rawContent = await fn.function(parsed, this);
-                const content = __classPrivateFieldGet(this, _AbstractChatCompletionRunner_instances, "m", _AbstractChatCompletionRunner_stringifyFunctionCallResult).call(this, rawContent);
-                this._addMessage({ role, tool_call_id, content });
-                if (singleFunctionToCall) {
-                    return;
+            if (singleFunctionToCall || params.parallel_tool_calls === false) {
+                for (const toolCall of message.tool_calls) {
+                    const result = await runToolCall(toolCall);
+                    if (result.message)
+                        this._addMessage(result.message);
+                    if (singleFunctionToCall && result.functionCalled) {
+                        await afterCompletion?.(chatCompletion, runner);
+                        return;
+                    }
                 }
             }
+            else {
+                const results = await Promise.allSettled(message.tool_calls.map(runToolCall));
+                // Wait for every concurrently running tool to settle before surfacing an
+                // error so tool side effects cannot continue after the runner has ended.
+                for (const result of results) {
+                    if (result.status === 'rejected')
+                        throw result.reason;
+                }
+                // Promise.allSettled preserves input order, so the next request receives
+                // tool result messages in the same order as the assistant's tool calls.
+                for (const result of results) {
+                    if (result.status === 'fulfilled' && result.value.message) {
+                        this._addMessage(result.value.message);
+                    }
+                }
+            }
+            await afterCompletion?.(chatCompletion, runner);
         }
         return;
     }
@@ -36488,7 +36967,7 @@ class ChatCompletionRunner extends AbstractChatCompletionRunner {
             ...options,
             headers: { ...options?.headers, 'X-Stainless-Helper-Method': 'runTools' },
         };
-        runner._run(() => runner._runTools(client, params, opts));
+        runner._run(() => runner._runTools(client, params, runner, opts));
         return runner;
     }
     _addMessage(message, emit = true) {
@@ -36739,15 +37218,46 @@ const _parseJSON = (jsonString, allow) => {
 // using this function with malformed JSON is undefined behavior
 const partialParse = (input) => parseJSON(input, Allow.ALL ^ Allow.NUM);
 
-var _ChatCompletionStream_instances, _ChatCompletionStream_params, _ChatCompletionStream_choiceEventStates, _ChatCompletionStream_currentChatCompletionSnapshot, _ChatCompletionStream_beginRequest, _ChatCompletionStream_getChoiceEventState, _ChatCompletionStream_addChunk, _ChatCompletionStream_emitToolCallDoneEvent, _ChatCompletionStream_emitContentDoneEvents, _ChatCompletionStream_endRequest, _ChatCompletionStream_getAutoParseableResponseFormat, _ChatCompletionStream_accumulateChatCompletion;
+var _ChatCompletionStream_instances, _ChatCompletionStream_params, _ChatCompletionStream_audioDoneChoiceIndexes, _ChatCompletionStream_choiceEventStates, _ChatCompletionStream_currentChatCompletionSnapshot, _ChatCompletionStream_beginRequest, _ChatCompletionStream_getChoiceEventState, _ChatCompletionStream_addChunk, _ChatCompletionStream_emitToolCallDoneEvent, _ChatCompletionStream_emitContentDoneEvents, _ChatCompletionStream_endRequest, _ChatCompletionStream_getAutoParseableResponseFormat, _ChatCompletionStream_accumulateChatCompletion;
+// Keep message records readable as empty chunks by older SDKs. Their finalizer
+// overwrites `object`, so the encoded payload does not leak into completions.
+const CHAT_COMPLETION_READABLE_STREAM_MESSAGE_PREFIX = 'chat.completion.chunk.message:';
+function makeChatCompletionReadableStreamMessageChunk(chunk, message, toolCallIds) {
+    const payload = {
+        type: 'message',
+        message,
+        ...(toolCallIds ? { tool_call_ids: toolCallIds } : {}),
+    };
+    return {
+        id: chunk.id,
+        choices: [],
+        created: chunk.created,
+        model: chunk.model,
+        object: `${CHAT_COMPLETION_READABLE_STREAM_MESSAGE_PREFIX}${JSON.stringify(payload)}`,
+    };
+}
+function isChatCompletionReadableStreamMessage(item) {
+    return (('type' in item && item.type === 'message' && 'message' in item) ||
+        ('object' in item &&
+            typeof item.object === 'string' &&
+            item.object.startsWith(CHAT_COMPLETION_READABLE_STREAM_MESSAGE_PREFIX)));
+}
+function getChatCompletionReadableStreamMessage(item) {
+    if ('type' in item) {
+        return item;
+    }
+    return JSON.parse(item.object.slice(CHAT_COMPLETION_READABLE_STREAM_MESSAGE_PREFIX.length));
+}
 class ChatCompletionStream extends AbstractChatCompletionRunner {
     constructor(params) {
         super();
         _ChatCompletionStream_instances.add(this);
         _ChatCompletionStream_params.set(this, void 0);
+        _ChatCompletionStream_audioDoneChoiceIndexes.set(this, void 0);
         _ChatCompletionStream_choiceEventStates.set(this, void 0);
         _ChatCompletionStream_currentChatCompletionSnapshot.set(this, void 0);
         __classPrivateFieldSet(this, _ChatCompletionStream_params, params);
+        __classPrivateFieldSet(this, _ChatCompletionStream_audioDoneChoiceIndexes, new Set());
         __classPrivateFieldSet(this, _ChatCompletionStream_choiceEventStates, []);
     }
     get currentChatCompletionSnapshot() {
@@ -36772,12 +37282,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
     }
     async _createChatCompletion(client, params, options) {
         super._createChatCompletion;
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_beginRequest).call(this);
         const stream = await client.chat.completions.create({ ...params, stream: true }, { ...options, signal: this.controller.signal });
         this._connected();
@@ -36790,32 +37295,53 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
         return this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
     }
     async _fromReadableStream(readableStream, options) {
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_beginRequest).call(this);
         this._connected();
         const stream = Stream.fromReadableStream(readableStream, this.controller);
         let chatId;
-        for await (const chunk of stream) {
-            if (chatId && chatId !== chunk.id) {
+        for await (const item of stream) {
+            if (isChatCompletionReadableStreamMessage(item)) {
+                const message = getChatCompletionReadableStreamMessage(item);
+                if (__classPrivateFieldGet(this, _ChatCompletionStream_currentChatCompletionSnapshot, "f")) {
+                    const toolCalls = __classPrivateFieldGet(this, _ChatCompletionStream_currentChatCompletionSnapshot, "f").choices[0]?.message.tool_calls;
+                    for (const [index, id] of message.tool_call_ids?.entries() ?? []) {
+                        const toolCall = toolCalls?.[index];
+                        if (toolCall && id) {
+                            toolCall.id = id;
+                        }
+                    }
+                    this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
+                    chatId = undefined;
+                }
+                this._addMessage(message.message);
+                continue;
+            }
+            const chunk = item;
+            if (chatId && chunk.id && chatId !== chunk.id) {
                 // A new request has been made.
                 this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
             }
             __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_addChunk).call(this, chunk);
-            chatId = chunk.id;
+            if (chunk.id)
+                chatId = chunk.id;
         }
         if (stream.controller.signal?.aborted) {
             throw new APIUserAbortError();
         }
-        return this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
+        if (__classPrivateFieldGet(this, _ChatCompletionStream_currentChatCompletionSnapshot, "f")) {
+            return this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
+        }
+        const lastChatCompletion = this._chatCompletions[this._chatCompletions.length - 1];
+        if (lastChatCompletion) {
+            return lastChatCompletion;
+        }
+        throw new OpenAIError(`request ended without sending any chunks`);
     }
-    [(_ChatCompletionStream_params = new WeakMap(), _ChatCompletionStream_choiceEventStates = new WeakMap(), _ChatCompletionStream_currentChatCompletionSnapshot = new WeakMap(), _ChatCompletionStream_instances = new WeakSet(), _ChatCompletionStream_beginRequest = function _ChatCompletionStream_beginRequest() {
+    [(_ChatCompletionStream_params = new WeakMap(), _ChatCompletionStream_audioDoneChoiceIndexes = new WeakMap(), _ChatCompletionStream_choiceEventStates = new WeakMap(), _ChatCompletionStream_currentChatCompletionSnapshot = new WeakMap(), _ChatCompletionStream_instances = new WeakSet(), _ChatCompletionStream_beginRequest = function _ChatCompletionStream_beginRequest() {
         if (this.ended)
             return;
+        __classPrivateFieldSet(this, _ChatCompletionStream_audioDoneChoiceIndexes, new Set());
         __classPrivateFieldSet(this, _ChatCompletionStream_currentChatCompletionSnapshot, undefined);
     }, _ChatCompletionStream_getChoiceEventState = function _ChatCompletionStream_getChoiceEventState(choice) {
         let state = __classPrivateFieldGet(this, _ChatCompletionStream_choiceEventStates, "f")[choice.index];
@@ -36839,21 +37365,22 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
         this._emit('chunk', chunk, completion);
         for (const choice of chunk.choices) {
             const choiceSnapshot = completion.choices[choice.index];
-            if (choice.delta.content != null &&
+            const { delta } = choice;
+            if (delta?.content != null &&
                 choiceSnapshot.message?.role === 'assistant' &&
                 choiceSnapshot.message?.content) {
-                this._emit('content', choice.delta.content, choiceSnapshot.message.content);
+                this._emit('content', delta.content, choiceSnapshot.message.content);
                 this._emit('content.delta', {
-                    delta: choice.delta.content,
+                    delta: delta.content,
                     snapshot: choiceSnapshot.message.content,
                     parsed: choiceSnapshot.message.parsed,
                 });
             }
-            if (choice.delta.refusal != null &&
+            if (delta?.refusal != null &&
                 choiceSnapshot.message?.role === 'assistant' &&
                 choiceSnapshot.message?.refusal) {
                 this._emit('refusal.delta', {
-                    delta: choice.delta.refusal,
+                    delta: delta.refusal,
                     snapshot: choiceSnapshot.message.refusal,
                 });
             }
@@ -36876,7 +37403,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                     __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_emitToolCallDoneEvent).call(this, choiceSnapshot, state.current_tool_call_index);
                 }
             }
-            for (const toolCall of choice.delta.tool_calls ?? []) {
+            for (const toolCall of delta?.tool_calls ?? []) {
                 if (state.current_tool_call_index !== toolCall.index) {
                     __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_emitContentDoneEvents).call(this, choiceSnapshot);
                     // new tool call started, the previous one is done
@@ -36886,7 +37413,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 }
                 state.current_tool_call_index = toolCall.index;
             }
-            for (const toolCallDelta of choice.delta.tool_calls ?? []) {
+            for (const toolCallDelta of delta?.tool_calls ?? []) {
                 const toolCallSnapshot = choiceSnapshot.message.tool_calls?.[toolCallDelta.index];
                 if (!toolCallSnapshot?.type) {
                     continue;
@@ -36901,7 +37428,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                     });
                 }
                 else {
-                    assertNever(toolCallSnapshot?.type);
+                    assertNever$1(toolCallSnapshot?.type);
                 }
             }
         }
@@ -36930,7 +37457,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             });
         }
         else {
-            assertNever(toolCallSnapshot.type);
+            assertNever$1(toolCallSnapshot.type);
         }
     }, _ChatCompletionStream_emitContentDoneEvents = function _ChatCompletionStream_emitContentDoneEvents(choiceSnapshot) {
         const state = __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_getChoiceEventState).call(this, choiceSnapshot);
@@ -36962,9 +37489,11 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
         if (!snapshot) {
             throw new OpenAIError(`request ended without sending any chunks`);
         }
+        const audioDoneChoiceIndexes = __classPrivateFieldGet(this, _ChatCompletionStream_audioDoneChoiceIndexes, "f");
+        __classPrivateFieldSet(this, _ChatCompletionStream_audioDoneChoiceIndexes, new Set());
         __classPrivateFieldSet(this, _ChatCompletionStream_currentChatCompletionSnapshot, undefined);
         __classPrivateFieldSet(this, _ChatCompletionStream_choiceEventStates, []);
-        return finalizeChatCompletion(snapshot, __classPrivateFieldGet(this, _ChatCompletionStream_params, "f"));
+        return finalizeChatCompletion(snapshot, __classPrivateFieldGet(this, _ChatCompletionStream_params, "f"), audioDoneChoiceIndexes);
     }, _ChatCompletionStream_getAutoParseableResponseFormat = function _ChatCompletionStream_getAutoParseableResponseFormat() {
         const responseFormat = __classPrivateFieldGet(this, _ChatCompletionStream_params, "f")?.response_format;
         if (isAutoParsableResponseFormat(responseFormat)) {
@@ -36972,7 +37501,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
         }
         return null;
     }, _ChatCompletionStream_accumulateChatCompletion = function _ChatCompletionStream_accumulateChatCompletion(chunk) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e;
         let snapshot = __classPrivateFieldGet(this, _ChatCompletionStream_currentChatCompletionSnapshot, "f");
         const { choices, ...rest } = chunk;
         if (!snapshot) {
@@ -36981,7 +37510,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 choices: [],
             });
         }
-        else {
+        else if (chunk.id) {
             Object.assign(snapshot, rest);
         }
         for (const { delta, finish_reason, index, logprobs = null, ...other } of chunk.choices) {
@@ -37020,13 +37549,38 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             Object.assign(choice, other);
             if (!delta)
                 continue; // Shouldn't happen; just in case.
-            const { content, refusal, function_call, role, tool_calls, ...rest } = delta;
+            __classPrivateFieldGet(this, _ChatCompletionStream_audioDoneChoiceIndexes, "f").delete(index);
+            const { audio, content, refusal, function_call, role, tool_calls, ...rest } = delta;
             Object.assign(choice.message, rest);
+            if (audio?.expires_at != null &&
+                audio.id == null &&
+                audio.data == null &&
+                audio.transcript == null &&
+                content == null &&
+                refusal == null &&
+                function_call == null &&
+                role == null &&
+                tool_calls == null &&
+                Object.keys(rest).length === 0) {
+                __classPrivateFieldGet(this, _ChatCompletionStream_audioDoneChoiceIndexes, "f").add(index);
+            }
             if (refusal) {
                 choice.message.refusal = (choice.message.refusal || '') + refusal;
             }
             if (role)
                 choice.message.role = role;
+            if (audio) {
+                const audioSnapshot = ((_c = choice.message).audio ?? (_c.audio = {}));
+                if (audio.id != null)
+                    audioSnapshot.id = audio.id;
+                if (audio.data != null)
+                    audioSnapshot.data = (audioSnapshot.data ?? '') + audio.data;
+                if (audio.transcript != null) {
+                    audioSnapshot.transcript = (audioSnapshot.transcript ?? '') + audio.transcript;
+                }
+                if (audio.expires_at != null)
+                    audioSnapshot.expires_at = audio.expires_at;
+            }
             if (function_call) {
                 if (!choice.message.function_call) {
                     choice.message.function_call = function_call;
@@ -37035,7 +37589,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                     if (function_call.name)
                         choice.message.function_call.name = function_call.name;
                     if (function_call.arguments) {
-                        (_c = choice.message.function_call).arguments ?? (_c.arguments = '');
+                        (_d = choice.message.function_call).arguments ?? (_d.arguments = '');
                         choice.message.function_call.arguments += function_call.arguments;
                     }
                 }
@@ -37043,14 +37597,15 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             if (content) {
                 choice.message.content = (choice.message.content || '') + content;
                 if (!choice.message.refusal && __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_getAutoParseableResponseFormat).call(this)) {
-                    choice.message.parsed = partialParse(choice.message.content);
+                    // The partial parser does not accept whitespace-only input.
+                    choice.message.parsed = choice.message.content.trim() ? partialParse(choice.message.content) : null;
                 }
             }
             if (tool_calls) {
                 if (!choice.message.tool_calls)
                     choice.message.tool_calls = [];
                 for (const { index, id, type, function: fn, ...rest } of tool_calls) {
-                    const tool_call = ((_d = choice.message.tool_calls)[index] ?? (_d[index] = {}));
+                    const tool_call = ((_e = choice.message.tool_calls)[index] ?? (_e[index] = {}));
                     Object.assign(tool_call, rest);
                     if (id)
                         tool_call.id = id;
@@ -37126,16 +37681,20 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
         return stream.toReadableStream();
     }
 }
-function finalizeChatCompletion(snapshot, params) {
+function finalizeChatCompletion(snapshot, params, audioDoneChoiceIndexes) {
     const { id, choices, created, model, system_fingerprint, ...rest } = snapshot;
     const completion = {
         ...rest,
         id,
         choices: choices.map(({ message, finish_reason, index, logprobs, ...choiceRest }) => {
-            if (!finish_reason) {
+            const { content = null, function_call, tool_calls, audio, ...messageRest } = message;
+            // Audio streams can end with an expires_at-only chunk after the
+            // generated audio, without a separate finish_reason.
+            const finishReason = finish_reason ?? (audioDoneChoiceIndexes.has(index) && isCompleteAudio(audio) ? 'stop' : null);
+            if (!finishReason) {
                 throw new OpenAIError(`missing finish_reason for choice ${index}`);
             }
-            const { content = null, function_call, tool_calls, ...messageRest } = message;
+            const audioResponse = audio ? { audio: audio } : {};
             const role = message.role; // this is what we expect; in theory it could be different which would make our types a slight lie but would be fine.
             if (!role) {
                 throw new OpenAIError(`missing role for choice ${index}`);
@@ -37151,12 +37710,13 @@ function finalizeChatCompletion(snapshot, params) {
                 return {
                     ...choiceRest,
                     message: {
+                        ...audioResponse,
                         content,
                         function_call: { arguments: args, name },
                         role,
                         refusal: message.refusal ?? null,
                     },
-                    finish_reason,
+                    finish_reason: finishReason,
                     index,
                     logprobs,
                 };
@@ -37165,19 +37725,17 @@ function finalizeChatCompletion(snapshot, params) {
                 return {
                     ...choiceRest,
                     index,
-                    finish_reason,
+                    finish_reason: finishReason,
                     logprobs,
                     message: {
                         ...messageRest,
+                        ...audioResponse,
                         role,
                         content,
                         refusal: message.refusal ?? null,
                         tool_calls: tool_calls.map((tool_call, i) => {
                             const { function: fn, type, id, ...toolRest } = tool_call;
                             const { arguments: args, name, ...fnRest } = fn || {};
-                            if (id == null) {
-                                throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].id\n${str(snapshot)}`);
-                            }
                             if (type == null) {
                                 throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].type\n${str(snapshot)}`);
                             }
@@ -37187,15 +37745,20 @@ function finalizeChatCompletion(snapshot, params) {
                             if (args == null) {
                                 throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].function.arguments\n${str(snapshot)}`);
                             }
-                            return { ...toolRest, id, type, function: { ...fnRest, name, arguments: args } };
+                            return {
+                                ...toolRest,
+                                id: id || `call_${uuid4()}`,
+                                type,
+                                function: { ...fnRest, name, arguments: args },
+                            };
                         }),
                     },
                 };
             }
             return {
                 ...choiceRest,
-                message: { ...messageRest, content, role, refusal: message.refusal ?? null },
-                finish_reason,
+                message: { ...messageRest, ...audioResponse, content, role, refusal: message.refusal ?? null },
+                finish_reason: finishReason,
                 index,
                 logprobs,
             };
@@ -37207,16 +37770,93 @@ function finalizeChatCompletion(snapshot, params) {
     };
     return maybeParseChatCompletion(completion, params);
 }
+function isCompleteAudio(audio) {
+    return audio?.id != null && audio.data != null && audio.transcript != null && audio.expires_at != null;
+}
 function str(x) {
     return JSON.stringify(x);
 }
-function assertNever(_x) { }
+function assertNever$1(_x) { }
 
 class ChatCompletionStreamingRunner extends ChatCompletionStream {
     static fromReadableStream(stream) {
         const runner = new ChatCompletionStreamingRunner(null);
         runner._run(() => runner._fromReadableStream(stream));
         return runner;
+    }
+    toReadableStream() {
+        const pushQueue = [];
+        const readQueue = [];
+        let done = false;
+        let lastChunk;
+        let toolCallIds;
+        const pushEvent = (event) => {
+            const reader = readQueue.shift();
+            if (reader) {
+                reader.resolve(event);
+            }
+            else {
+                pushQueue.push(event);
+            }
+        };
+        this.on('chunk', (chunk) => {
+            lastChunk = chunk;
+            pushEvent(chunk);
+        });
+        this.on('message', (message) => {
+            if (isAssistantMessage(message)) {
+                toolCallIds = message.tool_calls?.map((toolCall) => toolCall.id);
+                return;
+            }
+            if (isToolMessage(message)) {
+                if (!lastChunk) {
+                    throw new OpenAIError('cannot serialize a tool message before receiving any chunks');
+                }
+                pushEvent(makeChatCompletionReadableStreamMessageChunk(lastChunk, message, toolCallIds));
+            }
+        });
+        this.on('end', () => {
+            done = true;
+            for (const reader of readQueue) {
+                reader.resolve(undefined);
+            }
+            readQueue.length = 0;
+        });
+        this.on('abort', (err) => {
+            done = true;
+            for (const reader of readQueue) {
+                reader.reject(err);
+            }
+            readQueue.length = 0;
+        });
+        this.on('error', (err) => {
+            done = true;
+            for (const reader of readQueue) {
+                reader.reject(err);
+            }
+            readQueue.length = 0;
+        });
+        const iterator = () => ({
+            next: async () => {
+                if (!pushQueue.length) {
+                    if (done) {
+                        return { value: undefined, done: true };
+                    }
+                    return new Promise((resolve, reject) => readQueue.push({ resolve, reject })).then((event) => (event ? { value: event, done: false } : { value: undefined, done: true }));
+                }
+                const event = pushQueue.shift();
+                if (!event) {
+                    return { value: undefined, done: true };
+                }
+                return { value: event, done: false };
+            },
+            return: async () => {
+                this.abort();
+                return { value: undefined, done: true };
+            },
+        });
+        const stream = new Stream(iterator, this.controller);
+        return stream.toReadableStream();
     }
     static runTools(client, params, options) {
         const runner = new ChatCompletionStreamingRunner(
@@ -37226,7 +37866,7 @@ class ChatCompletionStreamingRunner extends ChatCompletionStream {
             ...options,
             headers: { ...options?.headers, 'X-Stainless-Helper-Method': 'runTools' },
         };
-        runner._run(() => runner._runTools(client, params, opts));
+        runner._run(() => runner._runTools(client, params, runner, opts));
         return runner;
     }
 }
@@ -37897,6 +38537,60 @@ let SpendAlerts$1 = class SpendAlerts extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+let SpendLimit$1 = class SpendLimit extends APIResource {
+    /**
+     * Get the organization's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const organizationSpendLimit =
+     *   await client.admin.organization.spendLimit.retrieve();
+     * ```
+     */
+    retrieve(options) {
+        return this._client.get('/organization/spend_limit', {
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+    /**
+     * Create or replace the organization's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const organizationSpendLimit =
+     *   await client.admin.organization.spendLimit.update({
+     *     currency: 'USD',
+     *     interval: 'month',
+     *     threshold_amount: 1,
+     *   });
+     * ```
+     */
+    update(body, options) {
+        return this._client.post('/organization/spend_limit', {
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+    /**
+     * Delete the organization's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const organizationSpendLimitDeleted =
+     *   await client.admin.organization.spendLimit.delete();
+     * ```
+     */
+    delete(options) {
+        return this._client.delete('/organization/spend_limit', {
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+};
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class Usage extends APIResource {
     /**
      * Get audio speeches usage details for the organization.
@@ -38350,7 +39044,7 @@ Groups$1.Users = Users$2;
 Groups$1.Roles = Roles$4;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-class APIKeys extends APIResource {
+let APIKeys$1 = class APIKeys extends APIResource {
     /**
      * Retrieves an API key in the project.
      *
@@ -38408,7 +39102,7 @@ class APIKeys extends APIResource {
             __security: { adminAPIKeyAuth: true },
         });
     }
-}
+};
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class Certificates extends APIResource {
@@ -38745,100 +39439,6 @@ let Roles$3 = class Roles extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-class ServiceAccounts extends APIResource {
-    /**
-     * Creates a new service account in the project. This also returns an unredacted
-     * API key for the service account.
-     *
-     * @example
-     * ```ts
-     * const serviceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.create(
-     *     'project_id',
-     *     { name: 'name' },
-     *   );
-     * ```
-     */
-    create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/service_accounts`, {
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        });
-    }
-    /**
-     * Retrieves a service account in the project.
-     *
-     * @example
-     * ```ts
-     * const projectServiceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.retrieve(
-     *     'service_account_id',
-     *     { project_id: 'project_id' },
-     *   );
-     * ```
-     */
-    retrieve(serviceAccountID, params, options) {
-        const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, {
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        });
-    }
-    /**
-     * Updates a service account in the project.
-     *
-     * @example
-     * ```ts
-     * const projectServiceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.update(
-     *     'service_account_id',
-     *     { project_id: 'project_id' },
-     *   );
-     * ```
-     */
-    update(serviceAccountID, params, options) {
-        const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, { body, ...options, __security: { adminAPIKeyAuth: true } });
-    }
-    /**
-     * Returns a list of service accounts in the project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const projectServiceAccount of client.admin.organization.projects.serviceAccounts.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/service_accounts`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
-    }
-    /**
-     * Deletes a service account from the project.
-     *
-     * Returns confirmation of service account deletion, or an error if the project is
-     * archived (archived projects have no service accounts).
-     *
-     * @example
-     * ```ts
-     * const serviceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.delete(
-     *     'service_account_id',
-     *     { project_id: 'project_id' },
-     *   );
-     * ```
-     */
-    delete(serviceAccountID, params, options) {
-        const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, { ...options, __security: { adminAPIKeyAuth: true } });
-    }
-}
-
-// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class SpendAlerts extends APIResource {
     /**
      * Creates a project spend alert.
@@ -38946,6 +39546,67 @@ class SpendAlerts extends APIResource {
     delete(alertID, params, options) {
         const { project_id } = params;
         return this._client.delete(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, {
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+}
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+class SpendLimit extends APIResource {
+    /**
+     * Get a project's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const projectSpendLimit =
+     *   await client.admin.organization.projects.spendLimit.retrieve(
+     *     'proj_123',
+     *   );
+     * ```
+     */
+    retrieve(projectID, options) {
+        return this._client.get(path `/organization/projects/${projectID}/spend_limit`, {
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+    /**
+     * Create or replace a project's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const projectSpendLimit =
+     *   await client.admin.organization.projects.spendLimit.update(
+     *     'proj_123',
+     *     {
+     *       currency: 'USD',
+     *       interval: 'month',
+     *       threshold_amount: 1,
+     *     },
+     *   );
+     * ```
+     */
+    update(projectID, body, options) {
+        return this._client.post(path `/organization/projects/${projectID}/spend_limit`, {
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+    /**
+     * Delete a project's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const projectSpendLimitDeleted =
+     *   await client.admin.organization.projects.spendLimit.delete(
+     *     'proj_123',
+     *   );
+     * ```
+     */
+    delete(projectID, options) {
+        return this._client.delete(path `/organization/projects/${projectID}/spend_limit`, {
             ...options,
             __security: { adminAPIKeyAuth: true },
         });
@@ -39114,6 +39775,125 @@ class Groups extends APIResource {
     }
 }
 Groups.Roles = Roles$2;
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+class APIKeys extends APIResource {
+    /**
+     * Creates an API key for a service account in the project.
+     *
+     * @example
+     * ```ts
+     * const apiKey =
+     *   await client.admin.organization.projects.serviceAccounts.apiKeys.create(
+     *     'service_account_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    create(serviceAccountID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}/api_keys`, { body, ...options, __security: { adminAPIKeyAuth: true } });
+    }
+}
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+class ServiceAccounts extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.apiKeys = new APIKeys(this._client);
+    }
+    /**
+     * Creates a new service account in the project. By default, this also returns an
+     * unredacted API key for the service account.
+     *
+     * @example
+     * ```ts
+     * const serviceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.create(
+     *     'project_id',
+     *     { name: 'name' },
+     *   );
+     * ```
+     */
+    create(projectID, body, options) {
+        return this._client.post(path `/organization/projects/${projectID}/service_accounts`, {
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+    /**
+     * Retrieves a service account in the project.
+     *
+     * @example
+     * ```ts
+     * const projectServiceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.retrieve(
+     *     'service_account_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    retrieve(serviceAccountID, params, options) {
+        const { project_id } = params;
+        return this._client.get(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, {
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        });
+    }
+    /**
+     * Updates a service account in the project.
+     *
+     * @example
+     * ```ts
+     * const projectServiceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.update(
+     *     'service_account_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    update(serviceAccountID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, { body, ...options, __security: { adminAPIKeyAuth: true } });
+    }
+    /**
+     * Returns a list of service accounts in the project.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const projectServiceAccount of client.admin.organization.projects.serviceAccounts.list(
+     *   'project_id',
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(projectID, query = {}, options) {
+        return this._client.getAPIList(path `/organization/projects/${projectID}/service_accounts`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+    }
+    /**
+     * Deletes a service account from the project.
+     *
+     * Returns confirmation of service account deletion, or an error if the project is
+     * archived (archived projects have no service accounts).
+     *
+     * @example
+     * ```ts
+     * const serviceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.delete(
+     *     'service_account_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    delete(serviceAccountID, params, options) {
+        const { project_id } = params;
+        return this._client.delete(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, { ...options, __security: { adminAPIKeyAuth: true } });
+    }
+}
+ServiceAccounts.APIKeys = APIKeys;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 let Roles$1 = class Roles extends APIResource {
@@ -39307,13 +40087,14 @@ class Projects extends APIResource {
         super(...arguments);
         this.users = new Users$1(this._client);
         this.serviceAccounts = new ServiceAccounts(this._client);
-        this.apiKeys = new APIKeys(this._client);
+        this.apiKeys = new APIKeys$1(this._client);
         this.rateLimits = new RateLimits(this._client);
         this.modelPermissions = new ModelPermissions(this._client);
         this.hostedToolPermissions = new HostedToolPermissions(this._client);
         this.groups = new Groups(this._client);
         this.roles = new Roles$3(this._client);
         this.dataRetention = new DataRetention(this._client);
+        this.spendLimit = new SpendLimit(this._client);
         this.spendAlerts = new SpendAlerts(this._client);
         this.certificates = new Certificates(this._client);
     }
@@ -39410,13 +40191,14 @@ class Projects extends APIResource {
 }
 Projects.Users = Users$1;
 Projects.ServiceAccounts = ServiceAccounts;
-Projects.APIKeys = APIKeys;
+Projects.APIKeys = APIKeys$1;
 Projects.RateLimits = RateLimits;
 Projects.ModelPermissions = ModelPermissions;
 Projects.HostedToolPermissions = HostedToolPermissions;
 Projects.Groups = Groups;
 Projects.Roles = Roles$3;
 Projects.DataRetention = DataRetention;
+Projects.SpendLimit = SpendLimit;
 Projects.SpendAlerts = SpendAlerts;
 Projects.Certificates = Certificates;
 
@@ -39583,6 +40365,7 @@ class Organization extends APIResource {
         this.groups = new Groups$1(this._client);
         this.roles = new Roles$5(this._client);
         this.dataRetention = new DataRetention$1(this._client);
+        this.spendLimit = new SpendLimit$1(this._client);
         this.spendAlerts = new SpendAlerts$1(this._client);
         this.certificates = new Certificates$1(this._client);
         this.projects = new Projects(this._client);
@@ -39596,6 +40379,7 @@ Organization.Users = Users;
 Organization.Groups = Groups$1;
 Organization.Roles = Roles$5;
 Organization.DataRetention = DataRetention$1;
+Organization.SpendLimit = SpendLimit$1;
 Organization.SpendAlerts = SpendAlerts$1;
 Organization.Certificates = Certificates$1;
 Organization.Projects = Projects;
@@ -39608,74 +40392,6 @@ class Admin extends APIResource {
     }
 }
 Admin.Organization = Organization;
-
-// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-const brand_privateNullableHeaders = /* @__PURE__ */ Symbol('brand.privateNullableHeaders');
-function* iterateHeaders(headers) {
-    if (!headers)
-        return;
-    if (brand_privateNullableHeaders in headers) {
-        const { values, nulls } = headers;
-        yield* values.entries();
-        for (const name of nulls) {
-            yield [name, null];
-        }
-        return;
-    }
-    let shouldClear = false;
-    let iter;
-    if (headers instanceof Headers) {
-        iter = headers.entries();
-    }
-    else if (isReadonlyArray(headers)) {
-        iter = headers;
-    }
-    else {
-        shouldClear = true;
-        iter = Object.entries(headers ?? {});
-    }
-    for (let row of iter) {
-        const name = row[0];
-        if (typeof name !== 'string')
-            throw new TypeError('expected header name to be a string');
-        const values = isReadonlyArray(row[1]) ? row[1] : [row[1]];
-        let didClear = false;
-        for (const value of values) {
-            if (value === undefined)
-                continue;
-            // Objects keys always overwrite older headers, they never append.
-            // Yield a null to clear the header before adding the new values.
-            if (shouldClear && !didClear) {
-                didClear = true;
-                yield [name, null];
-            }
-            yield [name, value];
-        }
-    }
-}
-const buildHeaders = (newHeaders) => {
-    const targetHeaders = new Headers();
-    const nullHeaders = new Set();
-    for (const headers of newHeaders) {
-        const seenHeaders = new Set();
-        for (const [name, value] of iterateHeaders(headers)) {
-            const lowerName = name.toLowerCase();
-            if (!seenHeaders.has(lowerName)) {
-                targetHeaders.delete(name);
-                seenHeaders.add(lowerName);
-            }
-            if (value === null) {
-                targetHeaders.delete(name);
-                nullHeaders.add(lowerName);
-            }
-            else {
-                targetHeaders.append(name, value);
-                nullHeaders.delete(lowerName);
-            }
-        }
-    }
-    return { [brand_privateNullableHeaders]: true, values: targetHeaders, nulls: nullHeaders };
-};
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 /**
@@ -40058,6 +40774,172 @@ ChatKit.Sessions = Sessions;
 ChatKit.Threads = Threads$1;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+let InputItems$1 = class InputItems extends APIResource {
+    /**
+     * Returns a list of input items for a given response.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const betaResponseItem of client.beta.responses.inputItems.list(
+     *   'response_id',
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(responseID, params = {}, options) {
+        const { betas, ...query } = params ?? {};
+        return this._client.getAPIList(path `/responses/${responseID}/input_items?beta=true`, (CursorPage), {
+            query,
+            ...options,
+            headers: buildHeaders([
+                { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                options?.headers,
+            ]),
+            __security: { bearerAuth: true },
+        });
+    }
+};
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+let InputTokens$1 = class InputTokens extends APIResource {
+    /**
+     * Returns input token counts of the request.
+     *
+     * Returns an object with `object` set to `response.input_tokens` and an
+     * `input_tokens` count.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.beta.responses.inputTokens.count();
+     * ```
+     */
+    count(params = {}, options) {
+        const { betas, ...body } = params ?? {};
+        return this._client.post('/responses/input_tokens?beta=true', {
+            body,
+            ...options,
+            headers: buildHeaders([
+                { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                options?.headers,
+            ]),
+            __security: { bearerAuth: true },
+        });
+    }
+};
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+let Responses$1 = class Responses extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.inputItems = new InputItems$1(this._client);
+        this.inputTokens = new InputTokens$1(this._client);
+    }
+    create(params, options) {
+        const { betas, ...body } = params;
+        return this._client.post('/responses?beta=true', {
+            body,
+            ...options,
+            headers: buildHeaders([
+                { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                options?.headers,
+            ]),
+            stream: params.stream ?? false,
+            __security: { bearerAuth: true },
+        });
+    }
+    retrieve(responseID, params = {}, options) {
+        const { betas, ...query } = params ?? {};
+        return this._client.get(path `/responses/${responseID}?beta=true`, {
+            query,
+            ...options,
+            headers: buildHeaders([
+                { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                options?.headers,
+            ]),
+            stream: params?.stream ?? false,
+            __security: { bearerAuth: true },
+        });
+    }
+    /**
+     * Deletes a model response with the given ID.
+     *
+     * @example
+     * ```ts
+     * await client.beta.responses.delete(
+     *   'resp_677efb5139a88190b512bc3fef8e535d',
+     * );
+     * ```
+     */
+    delete(responseID, params = {}, options) {
+        const { betas } = params ?? {};
+        return this._client.delete(path `/responses/${responseID}?beta=true`, {
+            ...options,
+            headers: buildHeaders([
+                { Accept: '*/*', ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                options?.headers,
+            ]),
+            __security: { bearerAuth: true },
+        });
+    }
+    /**
+     * Cancels a model response with the given ID. Only responses created with the
+     * `background` parameter set to `true` can be cancelled.
+     * [Learn more](https://platform.openai.com/docs/guides/background).
+     *
+     * @example
+     * ```ts
+     * const betaResponse = await client.beta.responses.cancel(
+     *   'resp_677efb5139a88190b512bc3fef8e535d',
+     * );
+     * ```
+     */
+    cancel(responseID, params = {}, options) {
+        const { betas } = params ?? {};
+        return this._client.post(path `/responses/${responseID}/cancel?beta=true`, {
+            ...options,
+            headers: buildHeaders([
+                { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                options?.headers,
+            ]),
+            __security: { bearerAuth: true },
+        });
+    }
+    /**
+     * Compact a conversation. Returns a compacted response object.
+     *
+     * Learn when and how to compact long-running conversations in the
+     * [conversation state guide](https://platform.openai.com/docs/guides/conversation-state#managing-the-context-window).
+     * For ZDR-compatible compaction details, see
+     * [Compaction (advanced)](https://platform.openai.com/docs/guides/conversation-state#compaction-advanced).
+     *
+     * @example
+     * ```ts
+     * const betaCompactedResponse =
+     *   await client.beta.responses.compact({
+     *     model: 'gpt-5.6-sol',
+     *   });
+     * ```
+     */
+    compact(params, options) {
+        const { betas, ...body } = params;
+        return this._client.post('/responses/compact?beta=true', {
+            body,
+            ...options,
+            headers: buildHeaders([
+                { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                options?.headers,
+            ]),
+            __security: { bearerAuth: true },
+        });
+    }
+};
+Responses$1.InputItems = InputItems$1;
+Responses$1.InputTokens = InputTokens$1;
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 /**
  * Build Assistants that can call models and use tools.
  *
@@ -40239,12 +41121,13 @@ class AssistantStream extends EventStream {
         let done = false;
         //Catch all for passing along all events
         this.on('event', (event) => {
+            const eventCopy = structuredClone(event);
             const reader = readQueue.shift();
             if (reader) {
-                reader.resolve(event);
+                reader.resolve(eventCopy);
             }
             else {
-                pushQueue.push(event);
+                pushQueue.push(eventCopy);
             }
         });
         this.on('end', () => {
@@ -40291,12 +41174,7 @@ class AssistantStream extends EventStream {
         return runner;
     }
     async _fromReadableStream(readableStream, options) {
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         this._connected();
         const stream = Stream.fromReadableStream(readableStream, this.controller);
         for await (const event of stream) {
@@ -40320,12 +41198,7 @@ class AssistantStream extends EventStream {
         return runner;
     }
     async _createToolAssistantStream(run, runId, params, options) {
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         const body = { ...params, stream: true };
         const stream = await run.submitToolOutputs(runId, body, {
             ...options,
@@ -40383,12 +41256,7 @@ class AssistantStream extends EventStream {
         return __classPrivateFieldGet(this, _AssistantStream_finalRun, "f");
     }
     async _createThreadAssistantStream(thread, params, options) {
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         const body = { ...params, stream: true };
         const stream = await thread.createAndRun(body, { ...options, signal: this.controller.signal });
         this._connected();
@@ -40401,12 +41269,7 @@ class AssistantStream extends EventStream {
         return this._addRun(__classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_endRequest).call(this));
     }
     async _createAssistantStream(run, threadId, params, options) {
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         const body = { ...params, stream: true };
         const stream = await run.create(threadId, body, { ...options, signal: this.controller.signal });
         this._connected();
@@ -40463,7 +41326,7 @@ class AssistantStream extends EventStream {
                     }
                     const accEntry = accValue[index];
                     if (accEntry == null) {
-                        accValue.push(deltaEntry);
+                        accValue[index] = deltaEntry;
                     }
                     else {
                         accValue[index] = this.accumulateDelta(accEntry, deltaEntry);
@@ -41023,12 +41886,14 @@ class Beta extends APIResource {
     constructor() {
         super(...arguments);
         this.realtime = new Realtime$1(this._client);
+        this.responses = new Responses$1(this._client);
         this.chatkit = new ChatKit(this._client);
         this.assistants = new Assistants(this._client);
         this.threads = new Threads(this._client);
     }
 }
 Beta.Realtime = Realtime$1;
+Beta.Responses = Responses$1;
 Beta.ChatKit = ChatKit;
 Beta.Assistants = Assistants;
 Beta.Threads = Threads;
@@ -42067,7 +42932,7 @@ Realtime.Calls = Calls;
 
 function maybeParseResponse(response, params) {
     if (!params || !hasAutoParseableInput(params)) {
-        return {
+        const parsed = {
             ...response,
             output_parsed: null,
             output: response.output.map((item) => {
@@ -42091,23 +42956,25 @@ function maybeParseResponse(response, params) {
                 }
             }),
         };
+        if (needsOutputText(response, parsed)) {
+            addOutputText(parsed);
+        }
+        return parsed;
     }
     return parseResponse(response, params);
 }
 function parseResponse(response, params) {
+    const shouldParse = !response.status || response.status === 'completed';
     const output = response.output.map((item) => {
         if (item.type === 'function_call') {
-            return {
-                ...item,
-                parsed_arguments: parseToolCall(params, item),
-            };
+            return shouldParse ? parseToolCall(params, item) : { ...item, parsed_arguments: null };
         }
         if (item.type === 'message') {
             const content = item.content.map((content) => {
                 if (content.type === 'output_text') {
                     return {
                         ...content,
-                        parsed: parseTextFormat(params, content.text),
+                        parsed: shouldParse ? parseTextFormat(params, content.text) : null,
                     };
                 }
                 return content;
@@ -42120,7 +42987,7 @@ function parseResponse(response, params) {
         return item;
     });
     const parsed = Object.assign({}, response, { output });
-    if (!Object.getOwnPropertyDescriptor(response, 'output_text')) {
+    if (needsOutputText(response, parsed)) {
         addOutputText(parsed);
     }
     Object.defineProperty(parsed, 'output_parsed', {
@@ -42155,7 +43022,8 @@ function hasAutoParseableInput(params) {
     if (isAutoParsableResponseFormat(params.text?.format)) {
         return true;
     }
-    return false;
+    return (Array.isArray(params.tools) &&
+        params.tools.some((tool) => isAutoParsableTool(tool) || (tool.type === 'function' && tool.strict === true)));
 }
 function isAutoParsableTool(tool) {
     return tool?.['$brand'] === 'auto-parseable-tool';
@@ -42173,6 +43041,9 @@ function parseToolCall(params, toolCall) {
                 : null,
     };
 }
+function needsOutputText(response, target) {
+    return !Object.getOwnPropertyDescriptor(response, 'output_text') || target.output_text == null;
+}
 function addOutputText(rsp) {
     const texts = [];
     for (const output of rsp.output) {
@@ -42188,7 +43059,405 @@ function addOutputText(rsp) {
     rsp.output_text = texts.join('');
 }
 
-var _ResponseStream_instances, _ResponseStream_params, _ResponseStream_currentResponseSnapshot, _ResponseStream_finalResponse, _ResponseStream_beginRequest, _ResponseStream_addEvent, _ResponseStream_endRequest, _ResponseStream_accumulateResponse;
+/**
+ * Applies a streaming event to a response snapshot.
+ *
+ * Always use the returned snapshot. Incremental events update the supplied snapshot
+ * in place, while response lifecycle events return a detached replacement. Event
+ * payloads are cloned, so retaining or replaying the raw events is safe.
+ */
+function accumulateResponse(event, snapshot) {
+    if (!snapshot) {
+        if (event.type !== 'response.created') {
+            throw new OpenAIError(`When snapshot hasn't been set yet, expected 'response.created' event, got ${event.type}`);
+        }
+        return cloneResponse(event.response);
+    }
+    switch (event.type) {
+        case 'response.output_item.added': {
+            snapshot.output.push(structuredClone(event.item));
+            if (event.item.type === 'message') {
+                addOutputText(snapshot);
+            }
+            break;
+        }
+        case 'response.output_item.done': {
+            getOutput(snapshot, event.output_index);
+            snapshot.output[event.output_index] = structuredClone(event.item);
+            if (event.item.type === 'message') {
+                addOutputText(snapshot);
+            }
+            break;
+        }
+        case 'response.content_part.added': {
+            const output = getOutput(snapshot, event.output_index);
+            const type = output.type;
+            const part = event.part;
+            if (type === 'message' && part.type !== 'reasoning_text') {
+                output.content.push(structuredClone(part));
+                if (part.type === 'output_text') {
+                    addOutputText(snapshot);
+                }
+            }
+            else if (type === 'reasoning' && part.type === 'reasoning_text') {
+                if (!output.content) {
+                    output.content = [];
+                }
+                output.content.push(structuredClone(part));
+            }
+            break;
+        }
+        case 'response.content_part.done': {
+            const output = getOutput(snapshot, event.output_index);
+            const part = event.part;
+            if (output.type === 'message' && part.type !== 'reasoning_text') {
+                getContent(output.content, event.content_index);
+                output.content[event.content_index] = structuredClone(part);
+                if (part.type === 'output_text') {
+                    addOutputText(snapshot);
+                }
+            }
+            else if (output.type === 'reasoning' && part.type === 'reasoning_text') {
+                const content = output.content;
+                if (!content) {
+                    throw new OpenAIError(`missing content at index ${event.content_index}`);
+                }
+                getContent(content, event.content_index);
+                content[event.content_index] = structuredClone(part);
+            }
+            break;
+        }
+        case 'response.output_text.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'message') {
+                const content = getContent(output.content, event.content_index);
+                if (content.type !== 'output_text') {
+                    throw new OpenAIError(`expected content to be 'output_text', got ${content.type}`);
+                }
+                content.text += event.delta;
+                snapshot.output_text += event.delta;
+            }
+            break;
+        }
+        case 'response.output_text.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'message') {
+                const content = getContent(output.content, event.content_index);
+                if (content.type !== 'output_text') {
+                    throw new OpenAIError(`expected content to be 'output_text', got ${content.type}`);
+                }
+                content.text = event.text;
+                addOutputText(snapshot);
+            }
+            break;
+        }
+        case 'response.output_text.annotation.added': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'message') {
+                const content = getContent(output.content, event.content_index);
+                if (content.type !== 'output_text') {
+                    throw new OpenAIError(`expected content to be 'output_text', got ${content.type}`);
+                }
+                content.annotations[event.annotation_index] = structuredClone(event.annotation);
+            }
+            break;
+        }
+        case 'response.refusal.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'message') {
+                const content = getContent(output.content, event.content_index);
+                if (content.type !== 'refusal') {
+                    throw new OpenAIError(`expected content to be 'refusal', got ${content.type}`);
+                }
+                content.refusal += event.delta;
+            }
+            break;
+        }
+        case 'response.refusal.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'message') {
+                const content = getContent(output.content, event.content_index);
+                if (content.type !== 'refusal') {
+                    throw new OpenAIError(`expected content to be 'refusal', got ${content.type}`);
+                }
+                content.refusal = event.refusal;
+            }
+            break;
+        }
+        case 'response.function_call_arguments.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'function_call') {
+                output.arguments += event.delta;
+            }
+            break;
+        }
+        case 'response.function_call_arguments.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'function_call') {
+                output.arguments = event.arguments;
+            }
+            break;
+        }
+        case 'response.reasoning_text.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'reasoning') {
+                if (!output.content) {
+                    throw new OpenAIError(`missing content at index ${event.content_index}`);
+                }
+                const content = getContent(output.content, event.content_index);
+                if (content.type !== 'reasoning_text') {
+                    throw new OpenAIError(`expected content to be 'reasoning_text', got ${content.type}`);
+                }
+                content.text += event.delta;
+            }
+            break;
+        }
+        case 'response.reasoning_text.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'reasoning') {
+                if (!output.content) {
+                    throw new OpenAIError(`missing content at index ${event.content_index}`);
+                }
+                const content = getContent(output.content, event.content_index);
+                if (content.type !== 'reasoning_text') {
+                    throw new OpenAIError(`expected content to be 'reasoning_text', got ${content.type}`);
+                }
+                content.text = event.text;
+            }
+            break;
+        }
+        case 'response.reasoning_summary_part.added': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'reasoning') {
+                output.summary.push(structuredClone(event.part));
+            }
+            break;
+        }
+        case 'response.reasoning_summary_part.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'reasoning') {
+                getContent(output.summary, event.summary_index);
+                output.summary[event.summary_index] = structuredClone(event.part);
+            }
+            break;
+        }
+        case 'response.reasoning_summary_text.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'reasoning') {
+                const part = getContent(output.summary, event.summary_index);
+                part.text += event.delta;
+            }
+            break;
+        }
+        case 'response.reasoning_summary_text.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'reasoning') {
+                const part = getContent(output.summary, event.summary_index);
+                part.text = event.text;
+            }
+            break;
+        }
+        case 'response.custom_tool_call_input.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'custom_tool_call') {
+                output.input += event.delta;
+            }
+            break;
+        }
+        case 'response.custom_tool_call_input.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'custom_tool_call') {
+                output.input = event.input;
+            }
+            break;
+        }
+        case 'response.mcp_call_arguments.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'mcp_call') {
+                output.arguments += event.delta;
+            }
+            break;
+        }
+        case 'response.mcp_call_arguments.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'mcp_call') {
+                output.arguments = event.arguments;
+            }
+            break;
+        }
+        case 'response.code_interpreter_call_code.delta': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'code_interpreter_call') {
+                output.code = (output.code ?? '') + event.delta;
+            }
+            break;
+        }
+        case 'response.code_interpreter_call_code.done': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'code_interpreter_call') {
+                output.code = event.code;
+            }
+            break;
+        }
+        case 'response.code_interpreter_call.in_progress': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'code_interpreter_call') {
+                output.status = 'in_progress';
+            }
+            break;
+        }
+        case 'response.code_interpreter_call.interpreting': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'code_interpreter_call') {
+                output.status = 'interpreting';
+            }
+            break;
+        }
+        case 'response.code_interpreter_call.completed': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'code_interpreter_call') {
+                output.status = 'completed';
+            }
+            break;
+        }
+        case 'response.file_search_call.in_progress': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'file_search_call') {
+                output.status = 'in_progress';
+            }
+            break;
+        }
+        case 'response.file_search_call.searching': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'file_search_call') {
+                output.status = 'searching';
+            }
+            break;
+        }
+        case 'response.file_search_call.completed': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'file_search_call') {
+                output.status = 'completed';
+            }
+            break;
+        }
+        case 'response.web_search_call.in_progress': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'web_search_call') {
+                output.status = 'in_progress';
+            }
+            break;
+        }
+        case 'response.web_search_call.searching': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'web_search_call') {
+                output.status = 'searching';
+            }
+            break;
+        }
+        case 'response.web_search_call.completed': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'web_search_call') {
+                output.status = 'completed';
+            }
+            break;
+        }
+        case 'response.image_generation_call.in_progress': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'image_generation_call') {
+                output.status = 'in_progress';
+            }
+            break;
+        }
+        case 'response.image_generation_call.generating': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'image_generation_call') {
+                output.status = 'generating';
+            }
+            break;
+        }
+        case 'response.image_generation_call.completed': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'image_generation_call') {
+                output.status = 'completed';
+            }
+            break;
+        }
+        case 'response.mcp_call.in_progress': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'mcp_call') {
+                output.status = 'in_progress';
+            }
+            break;
+        }
+        case 'response.mcp_call.completed': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'mcp_call') {
+                output.status = 'completed';
+            }
+            break;
+        }
+        case 'response.mcp_call.failed': {
+            const output = getOutput(snapshot, event.output_index);
+            if (output.type === 'mcp_call') {
+                output.status = 'failed';
+            }
+            break;
+        }
+        case 'response.created':
+        case 'response.queued':
+        case 'response.in_progress':
+        case 'response.completed':
+        case 'response.failed':
+        case 'response.incomplete': {
+            snapshot = cloneResponse(event.response);
+            break;
+        }
+        case 'response.audio.delta':
+        case 'response.audio.done':
+        case 'response.audio.transcript.delta':
+        case 'response.audio.transcript.done':
+        case 'response.image_generation_call.partial_image':
+        case 'response.mcp_list_tools.in_progress':
+        case 'response.mcp_list_tools.completed':
+        case 'response.mcp_list_tools.failed':
+        case 'keepalive':
+        case 'error': {
+            // These events do not contain state represented by the Response object.
+            break;
+        }
+        default: {
+            assertNever(event);
+        }
+    }
+    return snapshot;
+}
+function cloneResponse(response) {
+    const snapshot = structuredClone(response);
+    if (!Object.getOwnPropertyDescriptor(snapshot, 'output_text') || snapshot.output_text == null) {
+        addOutputText(snapshot);
+    }
+    return snapshot;
+}
+function getOutput(snapshot, outputIndex) {
+    const output = snapshot.output[outputIndex];
+    if (!output) {
+        throw new OpenAIError(`missing output at index ${outputIndex}`);
+    }
+    return output;
+}
+function getContent(content, contentIndex) {
+    const part = content[contentIndex];
+    if (!part) {
+        throw new OpenAIError(`missing content at index ${contentIndex}`);
+    }
+    return part;
+}
+function assertNever(value) {
+    throw new OpenAIError(`Unhandled response stream event: ${JSON.stringify(value)}`);
+}
+
+var _ResponseStream_instances, _ResponseStream_params, _ResponseStream_currentResponseSnapshot, _ResponseStream_finalResponse, _ResponseStream_beginRequest, _ResponseStream_addEvent, _ResponseStream_endRequest;
 class ResponseStream extends EventStream {
     constructor(params) {
         super();
@@ -42206,17 +43475,19 @@ class ResponseStream extends EventStream {
         }));
         return runner;
     }
+    static fromReadableStream(stream) {
+        const runner = new ResponseStream(null);
+        runner._run(() => runner._fromReadableStream(stream));
+        return runner;
+    }
     async _createOrRetrieveResponse(client, params, options) {
-        const signal = options?.signal;
-        if (signal) {
-            if (signal.aborted)
-                this.controller.abort();
-            signal.addEventListener('abort', () => this.controller.abort());
-        }
+        this._listenForAbort(options?.signal);
         __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_beginRequest).call(this);
         let stream;
         let starting_after = null;
         if ('response_id' in params) {
+            // Keep the full replay so that `accumulateResponse()` sees `response.created` and can build
+            // complete snapshots before locally filtering events at `starting_after`.
             stream = await client.responses.retrieve(params.response_id, { stream: true }, { ...options, signal: this.controller.signal, stream: true });
             starting_after = params.starting_after ?? null;
         }
@@ -42226,6 +43497,19 @@ class ResponseStream extends EventStream {
         this._connected();
         for await (const event of stream) {
             __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_addEvent).call(this, event, starting_after);
+        }
+        if (stream.controller.signal?.aborted) {
+            throw new APIUserAbortError();
+        }
+        return __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_endRequest).call(this);
+    }
+    async _fromReadableStream(readableStream, options) {
+        this._listenForAbort(options?.signal);
+        __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_beginRequest).call(this);
+        this._connected();
+        const stream = Stream.fromReadableStream(readableStream, this.controller);
+        for await (const event of stream) {
+            __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_addEvent).call(this, event, null);
         }
         if (stream.controller.signal?.aborted) {
             throw new APIUserAbortError();
@@ -42244,7 +43528,8 @@ class ResponseStream extends EventStream {
                 this._emit(name, event);
             }
         };
-        const response = __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_accumulateResponse).call(this, event);
+        const response = accumulateResponse(event, __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f"));
+        __classPrivateFieldSet(this, _ResponseStream_currentResponseSnapshot, response);
         maybeEmit('event', event);
         switch (event.type) {
             case 'response.output_text.delta': {
@@ -42296,88 +43581,6 @@ class ResponseStream extends EventStream {
         const parsedResponse = finalizeResponse(snapshot, __classPrivateFieldGet(this, _ResponseStream_params, "f"));
         __classPrivateFieldSet(this, _ResponseStream_finalResponse, parsedResponse);
         return parsedResponse;
-    }, _ResponseStream_accumulateResponse = function _ResponseStream_accumulateResponse(event) {
-        let snapshot = __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f");
-        if (!snapshot) {
-            if (event.type !== 'response.created') {
-                throw new OpenAIError(`When snapshot hasn't been set yet, expected 'response.created' event, got ${event.type}`);
-            }
-            snapshot = __classPrivateFieldSet(this, _ResponseStream_currentResponseSnapshot, event.response);
-            return snapshot;
-        }
-        switch (event.type) {
-            case 'response.output_item.added': {
-                snapshot.output.push(event.item);
-                break;
-            }
-            case 'response.content_part.added': {
-                const output = snapshot.output[event.output_index];
-                if (!output) {
-                    throw new OpenAIError(`missing output at index ${event.output_index}`);
-                }
-                const type = output.type;
-                const part = event.part;
-                if (type === 'message' && part.type !== 'reasoning_text') {
-                    output.content.push(part);
-                }
-                else if (type === 'reasoning' && part.type === 'reasoning_text') {
-                    if (!output.content) {
-                        output.content = [];
-                    }
-                    output.content.push(part);
-                }
-                break;
-            }
-            case 'response.output_text.delta': {
-                const output = snapshot.output[event.output_index];
-                if (!output) {
-                    throw new OpenAIError(`missing output at index ${event.output_index}`);
-                }
-                if (output.type === 'message') {
-                    const content = output.content[event.content_index];
-                    if (!content) {
-                        throw new OpenAIError(`missing content at index ${event.content_index}`);
-                    }
-                    if (content.type !== 'output_text') {
-                        throw new OpenAIError(`expected content to be 'output_text', got ${content.type}`);
-                    }
-                    content.text += event.delta;
-                }
-                break;
-            }
-            case 'response.function_call_arguments.delta': {
-                const output = snapshot.output[event.output_index];
-                if (!output) {
-                    throw new OpenAIError(`missing output at index ${event.output_index}`);
-                }
-                if (output.type === 'function_call') {
-                    output.arguments += event.delta;
-                }
-                break;
-            }
-            case 'response.reasoning_text.delta': {
-                const output = snapshot.output[event.output_index];
-                if (!output) {
-                    throw new OpenAIError(`missing output at index ${event.output_index}`);
-                }
-                if (output.type === 'reasoning') {
-                    const content = output.content?.[event.content_index];
-                    if (!content) {
-                        throw new OpenAIError(`missing content at index ${event.content_index}`);
-                    }
-                    if (content.type !== 'reasoning_text') {
-                        throw new OpenAIError(`expected content to be 'reasoning_text', got ${content.type}`);
-                    }
-                    content.text += event.delta;
-                }
-                break;
-            }
-            case 'response.completed': {
-                __classPrivateFieldSet(this, _ResponseStream_currentResponseSnapshot, event.response);
-                break;
-            }
-        }
-        return snapshot;
     }, Symbol.asyncIterator)]() {
         const pushQueue = [];
         const readQueue = [];
@@ -42577,7 +43780,7 @@ class Responses extends APIResource {
      * @example
      * ```ts
      * const compactedResponse = await client.responses.compact({
-     *   model: 'gpt-5.4',
+     *   model: 'gpt-5.6-sol',
      * });
      * ```
      */
@@ -43354,6 +44557,33 @@ _Webhooks_instances = new WeakSet(), _Webhooks_validateSecret = function _Webhoo
     return value;
 };
 
+/**
+ * A provider factory such as `bedrock(options)` captures configuration in a
+ * definition, while every OpenAI client receives a fresh runtime from
+ * `definition.configure()`. Keeping definitions out of the provider object
+ * makes providers opaque and prevents arbitrary objects from imitating one.
+ * It also leaves provider-specific dependencies outside the core SDK.
+ *
+ * The registry lives on `globalThis` under a global symbol so a provider made
+ * by one copy of the package still works with another copy, including mixed
+ * CommonJS and ESM installations. The WeakMap avoids retaining discarded
+ * provider configurations.
+ */
+const providerDefinitionsKey = Symbol.for('openai.node.providerDefinitions.v1');
+const providerGlobal = globalThis;
+const existingProviderDefinitions = providerGlobal[providerDefinitionsKey];
+const providerDefinitions = existingProviderDefinitions ?? new WeakMap();
+if (!existingProviderDefinitions) {
+    Object.defineProperty(providerGlobal, providerDefinitionsKey, { value: providerDefinitions });
+}
+function configureProvider(provider) {
+    const definition = providerDefinitions.get(provider);
+    if (!definition) {
+        throw new Error('Invalid provider. Providers must be created with createProvider().');
+    }
+    return definition.configure();
+}
+
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 var _OpenAI_instances, _a, _OpenAI_encoder, _OpenAI_baseURLOverridden;
 const WORKLOAD_IDENTITY_API_KEY_PLACEHOLDER = 'workload-identity-auth';
@@ -43370,6 +44600,7 @@ class OpenAI {
      * @param {string | null | undefined} [opts.project=process.env['OPENAI_PROJECT_ID'] ?? null]
      * @param {string | null | undefined} [opts.webhookSecret=process.env['OPENAI_WEBHOOK_SECRET'] ?? null]
      * @param {string} [opts.baseURL=process.env['OPENAI_BASE_URL'] ?? https://api.openai.com/v1] - Override the default base URL for the API.
+     * @param {Provider} [opts.provider] - Configure a third-party API provider. Mutually exclusive with top-level authentication and base URL options.
      * @param {number} [opts.timeout=10 minutes] - The maximum amount of time (in milliseconds) the client will wait for a response before timing out.
      * @param {MergedRequestInit} [opts.fetchOptions] - Additional `RequestInit` options to be passed to `fetch` calls.
      * @param {Fetch} [opts.fetch] - Specify a custom `fetch` function implementation.
@@ -43378,7 +44609,7 @@ class OpenAI {
      * @param {Record<string, string | undefined>} opts.defaultQuery - Default query parameters to include with every request to the API.
      * @param {boolean} [opts.dangerouslyAllowBrowser=false] - By default, client-side use of this library is not allowed, as it risks exposing your secret API credentials to attackers.
      */
-    constructor({ baseURL = readEnv('OPENAI_BASE_URL'), apiKey = readEnv('OPENAI_API_KEY') ?? null, adminAPIKey = readEnv('OPENAI_ADMIN_KEY') ?? null, organization = readEnv('OPENAI_ORG_ID') ?? null, project = readEnv('OPENAI_PROJECT_ID') ?? null, webhookSecret = readEnv('OPENAI_WEBHOOK_SECRET') ?? null, workloadIdentity, ...opts } = {}) {
+    constructor(clientOptions = {}) {
         _OpenAI_instances.add(this);
         _OpenAI_encoder.set(this, void 0);
         /**
@@ -43434,6 +44665,17 @@ class OpenAI {
         this.containers = new Containers(this);
         this.skills = new Skills(this);
         this.videos = new Videos(this);
+        const provider = clientOptions.provider;
+        if (provider) {
+            const conflictingOptions = ['apiKey', 'adminAPIKey', 'workloadIdentity', 'baseURL'].filter((key) => clientOptions[key] != null);
+            if (conflictingOptions.length) {
+                throw new OpenAIError(`The \`provider\` option cannot be used with ${conflictingOptions
+                    .map((key) => `\`${key}\``)
+                    .join(', ')}. Configure authentication and the base URL through the provider instead.`);
+            }
+        }
+        const { baseURL = provider ? null : readEnv('OPENAI_BASE_URL'), apiKey = provider ? null : readEnv('OPENAI_API_KEY') ?? null, adminAPIKey = provider ? null : readEnv('OPENAI_ADMIN_KEY') ?? null, organization = provider ? null : readEnv('OPENAI_ORG_ID') ?? null, project = provider ? null : readEnv('OPENAI_PROJECT_ID') ?? null, webhookSecret = readEnv('OPENAI_WEBHOOK_SECRET') ?? null, workloadIdentity, ...opts } = clientOptions;
+        const providerRuntime = provider ? configureProvider(provider) : undefined;
         const options = {
             apiKey,
             adminAPIKey,
@@ -43441,13 +44683,14 @@ class OpenAI {
             project,
             webhookSecret,
             workloadIdentity,
+            provider,
             ...opts,
-            baseURL: baseURL || `https://api.openai.com/v1`,
+            baseURL: providerRuntime?.baseURL ?? (baseURL || `https://api.openai.com/v1`),
         };
         if (apiKey && workloadIdentity) {
             throw new OpenAIError('The `apiKey` and `workloadIdentity` options are mutually exclusive');
         }
-        if (!apiKey && !adminAPIKey && !workloadIdentity) {
+        if (!providerRuntime && !apiKey && !adminAPIKey && !workloadIdentity) {
             throw new OpenAIError('Missing credentials. Please pass an `apiKey`, `workloadIdentity`, `adminAPIKey`, or set the `OPENAI_API_KEY` or `OPENAI_ADMIN_KEY` environment variable.');
         }
         if (!options.dangerouslyAllowBrowser && isRunningInBrowser()) {
@@ -43467,7 +44710,7 @@ class OpenAI {
         this.maxRetries = options.maxRetries ?? 2;
         this.fetch = options.fetch ?? getDefaultFetch();
         __classPrivateFieldSet(this, _OpenAI_encoder, FallbackEncoder);
-        const customHeadersEnv = readEnv('OPENAI_CUSTOM_HEADERS');
+        const customHeadersEnv = provider ? undefined : readEnv('OPENAI_CUSTOM_HEADERS');
         if (customHeadersEnv) {
             const parsed = {};
             for (const line of customHeadersEnv.split('\n')) {
@@ -43479,6 +44722,7 @@ class OpenAI {
             options.defaultHeaders = buildHeaders([parsed, options.defaultHeaders]);
         }
         this._options = options;
+        this._provider = providerRuntime;
         if (workloadIdentity) {
             this._workloadIdentityAuth = new WorkloadIdentityAuth(workloadIdentity, this.fetch);
         }
@@ -43492,7 +44736,9 @@ class OpenAI {
      * Create a new client instance re-using the same options given to the current client with optional overriding.
      */
     withOptions(options) {
-        const client = new this.constructor({
+        const inheritedProvider = this._options.provider;
+        const provider = options.provider ?? inheritedProvider;
+        const inheritedOptions = {
             ...this._options,
             baseURL: this.baseURL,
             maxRetries: this.maxRetries,
@@ -43507,7 +44753,22 @@ class OpenAI {
             organization: this.organization,
             project: this.project,
             webhookSecret: this.webhookSecret,
+        };
+        if (provider) {
+            delete inheritedOptions.apiKey;
+            delete inheritedOptions.adminAPIKey;
+            delete inheritedOptions.workloadIdentity;
+            delete inheritedOptions.baseURL;
+            if (provider !== inheritedProvider) {
+                delete inheritedOptions.organization;
+                delete inheritedOptions.project;
+                delete inheritedOptions.defaultHeaders;
+            }
+        }
+        const client = new this.constructor({
+            ...inheritedOptions,
             ...options,
+            provider,
         });
         return client;
     }
@@ -43566,6 +44827,8 @@ class OpenAI {
         return APIError.generate(status, error, message, headers);
     }
     async _callApiKey() {
+        if (this._provider)
+            return false;
         const apiKey = this._options.apiKey;
         if (typeof apiKey !== 'function')
             return false;
@@ -43605,6 +44868,8 @@ class OpenAI {
      * Used as a callback for mutating the given `FinalRequestOptions` object.
      */
     async prepareOptions(options) {
+        if (this._provider)
+            return;
         const security = options.__security ?? { bearerAuth: true };
         if (security.bearerAuth) {
             await this._callApiKey();
@@ -43650,7 +44915,9 @@ class OpenAI {
         const { req, url, timeout } = await this.buildRequest(options, {
             retryCount: maxRetries - retriesRemaining,
         });
+        const hasStreamingBody = options.__metadata?.['hasStreamingBody'] === true;
         await this.prepareRequest(req, { url, options });
+        await this._provider?.prepareRequest?.(req, { url, options });
         /** Not an API request ID, just for correlating local log entries. */
         const requestLogID = 'log_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
         const retryLogStr = retryOfRequestLogID === undefined ? '' : `, retryOf: ${retryOfRequestLogID}`;
@@ -43680,7 +44947,7 @@ class OpenAI {
             // others do not provide enough information to distinguish timeouts from other connection errors
             const isTimeout = isAbortError(response) ||
                 /timed? ?out/i.test(String(response) + ('cause' in response ? String(response.cause) : ''));
-            if (retriesRemaining) {
+            if (retriesRemaining && !hasStreamingBody) {
                 loggerFor(this).info(`[${requestLogID}] connection ${isTimeout ? 'timed out' : 'failed'} - ${retryMessage}`);
                 loggerFor(this).debug(`[${requestLogID}] connection ${isTimeout ? 'timed out' : 'failed'} (${retryMessage})`, formatRequestDetails({
                     retryOfRequestLogID,
@@ -43690,8 +44957,9 @@ class OpenAI {
                 }));
                 return this.retryRequest(options, retriesRemaining, retryOfRequestLogID ?? requestLogID);
             }
-            loggerFor(this).info(`[${requestLogID}] connection ${isTimeout ? 'timed out' : 'failed'} - error; no more retries left`);
-            loggerFor(this).debug(`[${requestLogID}] connection ${isTimeout ? 'timed out' : 'failed'} (error; no more retries left)`, formatRequestDetails({
+            const terminalMessage = hasStreamingBody ? 'error; streaming body cannot be retried' : 'error; no more retries left';
+            loggerFor(this).info(`[${requestLogID}] connection ${isTimeout ? 'timed out' : 'failed'} - ${terminalMessage}`);
+            loggerFor(this).debug(`[${requestLogID}] connection ${isTimeout ? 'timed out' : 'failed'} (${terminalMessage})`, formatRequestDetails({
                 retryOfRequestLogID,
                 url,
                 durationMs: headersTime - startTime,
@@ -43730,7 +44998,7 @@ class OpenAI {
                 }, retriesRemaining, retryOfRequestLogID ?? requestLogID);
             }
             const shouldRetry = await this.shouldRetry(response);
-            if (retriesRemaining && shouldRetry) {
+            if (retriesRemaining && shouldRetry && !hasStreamingBody) {
                 const retryMessage = `retrying, ${retriesRemaining} attempts remaining`;
                 // We don't need the body of this response.
                 await CancelReadableStream(response.body);
@@ -43744,7 +45012,10 @@ class OpenAI {
                 }));
                 return this.retryRequest(options, retriesRemaining, retryOfRequestLogID ?? requestLogID, response.headers);
             }
-            const retryMessage = shouldRetry ? `error; no more retries left` : `error; not retryable`;
+            const retryMessage = shouldRetry ?
+                hasStreamingBody ? `error; streaming body cannot be retried`
+                    : `error; no more retries left`
+                : `error; not retryable`;
             loggerFor(this).info(`${responseInfo} - ${retryMessage}`);
             const errText = await response.text().catch((err) => castToError(err).message);
             const errJSON = safeJSON(errText);
@@ -43928,12 +45199,14 @@ class OpenAI {
                 'OpenAI-Organization': this.organization,
                 'OpenAI-Project': this.project,
             },
-            await this.authHeaders(options, options.__security ?? { bearerAuth: true }),
+            this._provider ? undefined : (await this.authHeaders(options, options.__security ?? { bearerAuth: true })),
             this._options.defaultHeaders,
             bodyHeaders,
             options.headers,
         ]);
-        this.validateHeaders(headers, options.__security ?? { bearerAuth: true });
+        if (!this._provider) {
+            this.validateHeaders(headers, options.__security ?? { bearerAuth: true });
+        }
         return headers.values;
     }
     _makeAbort(controller) {
@@ -43941,8 +45214,16 @@ class OpenAI {
         //       would capture all request options, and cause a memory leak.
         return () => controller.abort();
     }
-    buildBody({ options: { body, headers: rawHeaders } }) {
+    buildBody({ options }) {
+        const { body, headers: rawHeaders } = options;
         if (!body) {
+            // A resource method always passes a `body` key when its operation defines a
+            // request body, even if the caller omitted an optional body param. Keep the
+            // content-type for those, and only elide it for operations with no body at
+            // all (e.g. GET/DELETE).
+            if (body === undefined && 'body' in options) {
+                return { ...__classPrivateFieldGet(this, _OpenAI_encoder, "f").call(this, { body, headers: buildHeaders([rawHeaders]) }), isStreamingBody: false };
+            }
             return { bodyHeaders: undefined, body: undefined, isStreamingBody: false };
         }
         const headers = buildHeaders([rawHeaders]);
@@ -43996,7 +45277,7 @@ class OpenAI {
     }
 }
 _a = OpenAI, _OpenAI_encoder = new WeakMap(), _OpenAI_instances = new WeakSet(), _OpenAI_baseURLOverridden = function _OpenAI_baseURLOverridden() {
-    return this.baseURL !== 'https://api.openai.com/v1';
+    return this._provider !== undefined || this.baseURL !== 'https://api.openai.com/v1';
 };
 OpenAI.OpenAI = _a;
 OpenAI.DEFAULT_TIMEOUT = 600000; // 10 minutes
@@ -44015,6 +45296,7 @@ OpenAI.PermissionDeniedError = PermissionDeniedError;
 OpenAI.UnprocessableEntityError = UnprocessableEntityError;
 OpenAI.InvalidWebhookSignatureError = InvalidWebhookSignatureError;
 OpenAI.toFile = toFile;
+OpenAI.toStreamingFile = toStreamingFile;
 OpenAI.Completions = Completions;
 OpenAI.Chat = Chat;
 OpenAI.Embeddings = Embeddings;
@@ -44641,7 +45923,7 @@ Respond ONLY in JSON format:
     }
 }
 
-/*! js-yaml 5.1.0 https://github.com/nodeca/js-yaml @license MIT */
+/*! js-yaml 5.2.2 https://github.com/nodeca/js-yaml @license MIT */
 //#region src/tag.ts
 var NOT_RESOLVED = Symbol("NOT_RESOLVED");
 var MERGE_KEY = Symbol("MERGE_KEY");
@@ -44883,7 +46165,7 @@ var intCoreTag = defineScalarTag("tag:yaml.org,2002:int", {
 		..."0123456789"
 	],
 	resolve: resolveYamlInteger$2,
-	identify: (object) => Object.prototype.toString.call(object) === "[object Number]" && object % 1 === 0 && !Object.is(object, -0),
+	identify: (object) => Number.isInteger(object) && !Object.is(object, -0) && object.toString(10).indexOf("e") < 0,
 	represent: (object) => object.toString(10)
 });
 //#endregion
@@ -44913,7 +46195,7 @@ var intJsonTag = defineScalarTag("tag:yaml.org,2002:int", {
 	implicit: true,
 	implicitFirstChars: ["-", ..."0123456789"],
 	resolve: resolveYamlInteger$1,
-	identify: (object) => Object.prototype.toString.call(object) === "[object Number]" && object % 1 === 0 && !Object.is(object, -0),
+	identify: (object) => Number.isInteger(object) && !Object.is(object, -0) && object.toString(10).indexOf("e") < 0,
 	represent: (object) => object.toString(10)
 });
 //#endregion
@@ -44949,7 +46231,7 @@ var intYaml11Tag = defineScalarTag("tag:yaml.org,2002:int", {
 		..."0123456789"
 	],
 	resolve: resolveYamlInteger,
-	identify: (object) => Object.prototype.toString.call(object) === "[object Number]" && object % 1 === 0 && !Object.is(object, -0),
+	identify: (object) => Number.isInteger(object) && !Object.is(object, -0) && object.toString(10).indexOf("e") < 0,
 	represent: (object) => object.toString(10)
 });
 //#endregion
@@ -44984,7 +46266,7 @@ var floatCoreTag = defineScalarTag("tag:yaml.org,2002:float", {
 		..."0123456789"
 	],
 	resolve: resolveYamlFloat$2,
-	identify: (object) => Object.prototype.toString.call(object) === "[object Number]" && (object % 1 !== 0 || Object.is(object, -0)),
+	identify: (object) => typeof object === "number" && (!Number.isInteger(object) || Object.is(object, -0) || object.toString(10).indexOf("e") >= 0),
 	represent: representYamlFloat$2
 });
 //#endregion
@@ -45019,7 +46301,7 @@ var floatJsonTag = defineScalarTag("tag:yaml.org,2002:float", {
 	implicit: true,
 	implicitFirstChars: ["-", ..."0123456789"],
 	resolve: resolveYamlFloat$1,
-	identify: (object) => Object.prototype.toString.call(object) === "[object Number]" && (object % 1 !== 0 || Object.is(object, -0)),
+	identify: (object) => typeof object === "number" && (!Number.isInteger(object) || Object.is(object, -0) || object.toString(10).indexOf("e") >= 0),
 	represent: representYamlFloat$1
 });
 //#endregion
@@ -45058,7 +46340,7 @@ var floatYaml11Tag = defineScalarTag("tag:yaml.org,2002:float", {
 		..."0123456789"
 	],
 	resolve: resolveYamlFloat,
-	identify: (object) => Object.prototype.toString.call(object) === "[object Number]" && (object % 1 !== 0 || Object.is(object, -0)),
+	identify: (object) => typeof object === "number" && (!Number.isInteger(object) || Object.is(object, -0) || object.toString(10).indexOf("e") >= 0),
 	represent: representYamlFloat
 });
 //#endregion
@@ -45146,18 +46428,40 @@ var seqTag = defineSequenceTag("tag:yaml.org,2002:seq", {
 	identify: Array.isArray
 });
 //#endregion
+//#region src/common/object.ts
+function isPlainObject(data) {
+	if (data === null || typeof data !== "object" || Array.isArray(data)) return false;
+	const prototype = Object.getPrototypeOf(data);
+	return prototype === null || prototype === Object.prototype;
+}
+function pick(object, keys) {
+	const result = {};
+	for (const key of keys) if (object[key] !== void 0) result[key] = object[key];
+	return result;
+}
+//#endregion
 //#region src/tag/sequence/omap.ts
 var omapTag = defineSequenceTag("tag:yaml.org,2002:omap", {
-	create: () => [],
-	addItem: (container, item) => {
-		if (Object.prototype.toString.call(item) !== "[object Object]") return "cannot resolve an ordered map item";
-		const object = item;
-		const itemKeys = Object.keys(object);
-		if (itemKeys.length !== 1) return "cannot resolve an ordered map item";
-		for (const existing of container) if (Object.prototype.hasOwnProperty.call(existing, itemKeys[0])) return "cannot resolve an ordered map item";
-		container.push(object);
+	create: () => ({
+		list: [],
+		seen: /* @__PURE__ */ new Set()
+	}),
+	addItem: (carrier, item) => {
+		let key;
+		if (item instanceof Map) {
+			if (item.size !== 1) return "cannot resolve an ordered map item";
+			key = item.keys().next().value;
+		} else if (isPlainObject(item)) {
+			const itemKeys = Object.keys(item);
+			if (itemKeys.length !== 1) return "cannot resolve an ordered map item";
+			key = itemKeys[0];
+		} else return "cannot resolve an ordered map item";
+		if (carrier.seen.has(key)) return "duplicate key in ordered map";
+		carrier.seen.add(key);
+		carrier.list.push(item);
 		return "";
-	}
+	},
+	finalize: (carrier) => carrier.list
 });
 //#endregion
 //#region src/tag/sequence/pairs.ts
@@ -45177,18 +46481,6 @@ var pairsTag = defineSequenceTag("tag:yaml.org,2002:pairs", {
 		return "";
 	}
 });
-//#endregion
-//#region src/common/object.ts
-function isPlainObject(data) {
-	if (data === null || typeof data !== "object" || Array.isArray(data)) return false;
-	const prototype = Object.getPrototypeOf(data);
-	return prototype === null || prototype === Object.prototype;
-}
-function pick(object, keys) {
-	const result = {};
-	for (const key of keys) if (object[key] !== void 0) result[key] = object[key];
-	return result;
-}
 //#endregion
 //#region src/tag/mapping/map.ts
 var mapTag = defineMappingTag("tag:yaml.org,2002:map", {
@@ -45749,7 +47041,8 @@ var DEFAULT_CONSTRUCTOR_OPTIONS = {
 	filename: "",
 	schema: CORE_SCHEMA,
 	json: false,
-	maxMergeSeqLength: 20
+	maxTotalMergeKeys: 1e4,
+	maxAliases: -1
 };
 function eventPosition$1(event) {
 	if ("tagStart" in event && event.tagStart !== NO_RANGE$2) return event.tagStart;
@@ -45837,6 +47130,7 @@ function isMappingTag(tag) {
 }
 function mergeKeys(state, frame, source, sourceTag) {
 	for (const sourceKey of sourceTag.keys(source)) {
+		if (state.maxTotalMergeKeys !== -1 && ++state.totalMergeKeys > state.maxTotalMergeKeys) throwError$1(state, `merge keys exceeded maxTotalMergeKeys (${state.maxTotalMergeKeys})`);
 		if (frame.tag.has(frame.value, sourceKey)) continue;
 		const err = frame.tag.addPair(frame.value, sourceKey, sourceTag.get(source, sourceKey));
 		if (err) throwError$1(state, err);
@@ -45846,14 +47140,8 @@ function mergeKeys(state, frame, source, sourceTag) {
 function mergeSource(state, frame, source, sourceTag) {
 	state.position = frame.keyPosition;
 	if (isMappingTag(sourceTag)) mergeKeys(state, frame, source, sourceTag);
-	else if (sourceTag.nodeKind === "sequence" && Array.isArray(source)) {
-		const seen = /* @__PURE__ */ new Set();
-		for (const element of source) {
-			if (seen.has(element)) continue;
-			seen.add(element);
-			mergeKeys(state, frame, element, frame.tag);
-		}
-	} else throwError$1(state, "cannot merge mappings; the provided source object is unacceptable");
+	else if (sourceTag.nodeKind === "sequence" && Array.isArray(source)) for (const element of source) mergeKeys(state, frame, element, frame.tag);
+	else throwError$1(state, "cannot merge mappings; the provided source object is unacceptable");
 }
 function addMappingValue(state, frame, key, value, tag) {
 	state.position = frame.keyPosition;
@@ -45874,7 +47162,6 @@ function addValue(state, value, tag) {
 	} else if (frame.kind === "sequence") {
 		if (frame.merge) {
 			if (!isMappingTag(tag)) throwError$1(state, "cannot merge mappings; the provided source object is unacceptable");
-			if (frame.index >= state.maxMergeSeqLength) throwError$1(state, `merge sequence length exceeded maxMergeSeqLength (${state.maxMergeSeqLength})`);
 		}
 		const err = frame.tag.addItem(frame.value, value, frame.index++);
 		if (err) throwError$1(state, err);
@@ -45911,7 +47198,9 @@ function constructFromEvents(events, options) {
 		position: 0,
 		frames: [],
 		anchors: /* @__PURE__ */ new Map(),
-		tagHandlers: Object.create(null)
+		tagHandlers: Object.create(null),
+		totalMergeKeys: 0,
+		aliasCount: 0
 	};
 	while (state.eventIndex < state.events.length) {
 		const event = state.events[state.eventIndex++];
@@ -45919,6 +47208,7 @@ function constructFromEvents(events, options) {
 		switch (event.type) {
 			case 1:
 				state.anchors = /* @__PURE__ */ new Map();
+				state.aliasCount = 0;
 				state.tagHandlers = Object.create(null);
 				for (const directive of event.directives) if (directive.kind === "tag") state.tagHandlers[directive.handle] = directive.prefix;
 				state.frames.push({
@@ -45969,6 +47259,7 @@ function constructFromEvents(events, options) {
 				break;
 			}
 			case 5: {
+				if (state.maxAliases !== -1 && ++state.aliasCount > state.maxAliases) throwError$1(state, `aliases exceeded maxAliases (${state.maxAliases})`);
 				const name = state.source.slice(event.anchorStart, event.anchorEnd);
 				const anchor = state.anchors.get(name);
 				if (!anchor) throwError$1(state, `unidentified alias "${name}"`);
@@ -46041,6 +47332,17 @@ function addMappingEvent(state, start, anchorStart, anchorEnd, tagStart, tagEnd,
 		tagStart,
 		tagEnd,
 		style
+	});
+}
+function insertFlowPairMappingEvent(state, snapshot) {
+	state.events.splice(snapshot.eventsLength, 0, {
+		type: 3,
+		start: snapshot.position,
+		anchorStart: NO_RANGE$1,
+		anchorEnd: NO_RANGE$1,
+		tagStart: NO_RANGE$1,
+		tagEnd: NO_RANGE$1,
+		style: 2
 	});
 }
 function addScalarEvent(state, valueStart, valueEnd, anchorStart, anchorEnd, tagStart, tagEnd, style, chomping = 1, indent = -1, fast = false) {
@@ -46486,12 +47788,8 @@ function readFlowCollection(state, nodeIndent, props) {
 			state.position++;
 			skipFlowSeparationSpace(state, nodeIndent);
 			if (!isMapping) {
-				restoreState(state, entryStart);
-				addMappingEvent(state, entryStart.position, NO_RANGE$1, NO_RANGE$1, NO_RANGE$1, NO_RANGE$1, 2);
-				if (!parseNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true)) addEmptyScalarEvent(state);
-				skipFlowSeparationSpace(state, nodeIndent);
-				state.position++;
-				skipFlowSeparationSpace(state, nodeIndent);
+				insertFlowPairMappingEvent(state, entryStart);
+				if (!keyWasRead) addEmptyScalarEvent(state);
 			} else if (!keyWasRead) addEmptyScalarEvent(state);
 			if (!parseNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true)) addEmptyScalarEvent(state);
 			skipFlowSeparationSpace(state, nodeIndent);
@@ -46501,9 +47799,8 @@ function readFlowCollection(state, nodeIndent, props) {
 			addEmptyScalarEvent(state);
 		} else if (isMapping) addEmptyScalarEvent(state);
 		else if (isPair) {
-			restoreState(state, entryStart);
-			addMappingEvent(state, entryStart.position, NO_RANGE$1, NO_RANGE$1, NO_RANGE$1, NO_RANGE$1, 2);
-			parseNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
+			insertFlowPairMappingEvent(state, entryStart);
+			if (!keyWasRead) addEmptyScalarEvent(state);
 			addEmptyScalarEvent(state);
 			addPopEvent(state);
 		}

@@ -54,9 +54,7 @@ export async function run(): Promise<void> {
       includePrereleases: core.getInput('include_prereleases') === 'true',
       versionLag: parseInt(core.getInput('version_lag') || '0'),
       versionLagDepth: (core.getInput('version_lag_depth') || 'minor') as
-        | 'major'
-        | 'minor'
-        | 'patch'
+        'major' | 'minor' | 'patch'
     }
 
     setGlobalDryRun(config.dryRun)
